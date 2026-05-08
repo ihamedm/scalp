@@ -1,109 +1,51 @@
 //+------------------------------------------------------------------+
-//|                                            GridHedgeEA_V13.mq5   |
-//|                     
+//|                                 GridHedge_Trend_First.mq5         |
+//|            یک پوزیشن فوری بر اساس روند + شبکه ۵ پیپ              |
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
-#property link      ""
-#property version   "1.03"
+#property link      "hamed.movasaqpoor@gmail.com"
+#property version   "2.00"
 
 #include <Trade\Trade.mqh>
 
-//------------------------- ENUM for trade direction (internal) -------------------------
-enum ENUM_ORDER_DIR
-  {
-   BUY_STOP,
-   SELL_STOP
-  };
+int Getg_PipSize(void);
 
 //------------------------- INPUT PARAMETERS -------------------------
 input group "=== تنظیمات کلی ==="
-input bool     EnableTrading      = true;               // فعال‌سازی اولیه
-input bool     ResetGridOnStart   = true;               // حذف سفارشات قبلی و شروع دوباره
-input int      MagicNumber        = 202502;             // شماره جادویی اکسپرت
-input double   TotalProfitTarget  = 10.0;               // سود کل به دلار (بستن همه)
-input double   TotalStopLoss      = -50.0;              // ضرر کل به دلار (عدد منفی)
-input double   PipSize            = 10.0;               // هر پیپ چند نقطه (برای جفت‌ارز ۱۰)
+input bool     EnableTrading        = true;       // فعال‌سازی اولیه
+input bool     ResetGridOnStart     = true;       // حذف سفارشات قبلی و شروع دوباره
+input int      MagicNumber          = 202601;     // شماره جادویی
+input double   TotalProfitTarget    = 10.0;       // سود کل (دلار) - بستن همه
+input double   TotalStopLoss        = -50.0;      // ضرر کل (عدد منفی)
 
-input group "=== خرید ۱ (Buy #1) ==="
-input double   Buy1_StepPips = 0.5;   // فاصله از Ask (پیپ)
-input double   Buy1_Lot      = 0.01;   // حجم
-input double   Buy1_SL       = 2.0;    // حد ضرر به دلار (۰ = بدون حد)
-input double   Buy1_TP       = 1.0;    // حد سود به دلار
 
-input group "=== خرید ۲ (Buy #2) ==="
-input double   Buy2_StepPips = 10.0;
-input double   Buy2_Lot      = 0.01;
-input double   Buy2_SL       = 2.0;
-input double   Buy2_TP       = 1.0;
+input group "=== تشخیص روند (پوزیشن اول) ==="
+input bool     UseManualDirection   = false;      // انتخاب دستی جهت؟
+input int      DirectionChoice      = 0;          // 0 = خرید, 1 = فروش (در صورت دستی)
+input int      TrendMAPeriod        = 20;         // دوره EMA برای تشخیص خودکار
+input int      TrendMAShift         = 0;          // شیفت EMA
+input ENUM_MA_METHOD TrendMAMethod  = MODE_EMA;   // نوع میانگین
 
-input group "=== خرید ۳ (Buy #3) ==="
-input double   Buy3_StepPips = 15.0;
-input double   Buy3_Lot      = 0.02;
-input double   Buy3_SL       = 3.0;
-input double   Buy3_TP       = 2.0;
+input group "=== شبکه سفارشات معلق ==="
+input int      GridLevels           = 5;          // تعداد سفارشات Buy Stop و Sell Stop
+input double   GridPipStep          = 5.0;        // فاصله بین پله‌ها (پیپ)
 
-input group "=== خرید ۴ (Buy #4) ==="
-input double   Buy4_StepPips = 15.0;
-input double   Buy4_Lot      = 0.02;
-input double   Buy4_SL       = 3.0;
-input double   Buy4_TP       = 2.0;
-
-input group "=== خرید ۵ (Buy #5) ==="
-input double   Buy5_StepPips = 20.0;
-input double   Buy5_Lot      = 0.03;
-input double   Buy5_SL       = 4.0;
-input double   Buy5_TP       = 3.0;
-
-input group "=== خرید ۶ (Buy #6) ==="
-input double   Buy6_StepPips = 20.0;
-input double   Buy6_Lot      = 0.03;
-input double   Buy6_SL       = 4.0;
-input double   Buy6_TP       = 3.0;
-
-input group "=== فروش ۱ (Sell #1) ==="
-input double   Sell1_StepPips = 0.5;
-input double   Sell1_Lot      = 0.01;
-input double   Sell1_SL       = 2.0;
-input double   Sell1_TP       = 1.0;
-
-input group "=== فروش ۲ (Sell #2) ==="
-input double   Sell2_StepPips = 10.0;
-input double   Sell2_Lot      = 0.01;
-input double   Sell2_SL       = 2.0;
-input double   Sell2_TP       = 1.0;
-
-input group "=== فروش ۳ (Sell #3) ==="
-input double   Sell3_StepPips = 15.0;
-input double   Sell3_Lot      = 0.02;
-input double   Sell3_SL       = 3.0;
-input double   Sell3_TP       = 2.0;
-
-input group "=== فروش ۴ (Sell #4) ==="
-input double   Sell4_StepPips = 15.0;
-input double   Sell4_Lot      = 0.02;
-input double   Sell4_SL       = 3.0;
-input double   Sell4_TP       = 2.0;
-
-input group "=== فروش ۵ (Sell #5) ==="
-input double   Sell5_StepPips = 20.0;
-input double   Sell5_Lot      = 0.03;
-input double   Sell5_SL       = 4.0;
-input double   Sell5_TP       = 3.0;
-
-input group "=== فروش ۶ (Sell #6) ==="
-input double   Sell6_StepPips = 20.0;
-input double   Sell6_Lot      = 0.03;
-input double   Sell6_SL       = 4.0;
-input double   Sell6_TP       = 3.0;
+input group "=== مدیریت سرمایه و ریسک ==="
+input double   DefaultLot           = 0.01;       // حجم ثابت همه پوزیشن‌ها
+input double   SL_Dollar            = 2.0;        // حد ضرر به دلار (۰ = بدون حد)
+input double   TP_Dollar            = 1.0;        // حد سود به دلار (۰ = بدون حد)
+input group "=== مدیریت ریسک (ادامه) ==="
+input int      MinStopPaddingPips   = 30;        // حداقل فاصله استاپ از قیمت (پیپ)
 
 //------------------------- GLOBAL VARIABLES -------------------------
-CTrade GridTrade;                 // شیء معاملاتی
-double pointValue;                // ارزش هر نقطه (نرخ P/L) برای یک لات
-bool   isTradingActive = false;  // وضعیت واقعی فعال بودن (قابل تغییر)
-bool   tradingDone     = false;  // آیا بستن کلی انجام شده؟
+CTrade GridTrade;
+double pointValue;
+bool   isTradingActive = false;
+bool   tradingDone     = false;
+int    g_PipSize;
 
 //+------------------------------------------------------------------+
-//| Expert initialization function                                   |
+//| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
   {
@@ -111,29 +53,52 @@ int OnInit()
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize == 0 || tickValue == 0)
      {
-      Print("خطا: عدم دسترسی به اطلاعات TickSize/TickValue");
+      Print("خطا: TickSize/TickValue در دسترس نیست");
       return(INIT_FAILED);
      }
    pointValue = tickValue / tickSize;
 
    tradingDone = false;
    isTradingActive = EnableTrading;
+   
+   g_PipSize = Getg_PipSize();
 
    if(!isTradingActive)
      {
-      Print("EnableTrading = false؛ معامله‌ای باز نمی‌شود.");
+      Print("EnableTrading = false؛ اجرا نمی‌شود.");
       return(INIT_SUCCEEDED);
      }
 
    if(ResetGridOnStart)
       DeleteAllOrdersAndPositions();
 
-   PlaceGrid();
+   // اجرای استراتژی
+   ExecuteStrategy();
+
    return(INIT_SUCCEEDED);
+  }
+  
+//+------------------------------------------------------------------+
+//| تشخیص خودکار g_PipSize بر اساس تعداد ارقام اعشار نماد               |
+//+------------------------------------------------------------------+
+int Getg_PipSize()
+  {
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   switch(digits)
+     {
+      case 2:  // طلا با ۲ رقم اعشار (مثل ۲۳۰۰.۰۰)
+      case 3:  // طلا با ۳ رقم اعشار (مثل ۲۳۰۰.۰۰۰)
+         return 10;  // هر ۱۰ پوینت = ۱ پیپ
+      case 4:  // جفت ارزهای ۴ رقمی
+         return 1;   // هر ۱ پوینت = ۱ پیپ
+      case 5:  // جفت ارزهای ۵ رقمی
+      default:
+         return 10;  // هر ۱۰ پوینت = ۱ پیپ
+     }
   }
 
 //+------------------------------------------------------------------+
-//| Expert tick function                                             |
+//| Tick function                                                    |
 //+------------------------------------------------------------------+
 void OnTick()
   {
@@ -144,7 +109,7 @@ void OnTick()
   }
 
 //+------------------------------------------------------------------+
-//| حذف تمام سفارشات معلق و بستن پوزیشن‌های باز با این Magic         |
+//| حذف سفارشات و بستن پوزیشن‌ها                                     |
 //+------------------------------------------------------------------+
 void DeleteAllOrdersAndPositions()
   {
@@ -157,7 +122,7 @@ void DeleteAllOrdersAndPositions()
             OrderGetInteger(ORDER_TYPE) <= ORDER_TYPE_SELL_STOP)
            {
             if(!GridTrade.OrderDelete(ticket))
-               Print("خطا در حذف سفارش معلق #", ticket, " : ", GetLastError());
+               Print("خطا در حذف سفارش ", ticket, " : ", GetLastError());
            }
         }
      }
@@ -170,106 +135,227 @@ void DeleteAllOrdersAndPositions()
          if(PositionGetInteger(POSITION_MAGIC) == MagicNumber)
            {
             if(!GridTrade.PositionClose(ticket))
-               Print("خطا در بستن پوزیشن #", ticket, " : ", GetLastError());
+               Print("خطا در بستن پوزیشن ", ticket, " : ", GetLastError());
            }
         }
      }
   }
 
-
-
 //+------------------------------------------------------------------+
-//| قرار دادن شبکه ۶ Buy Stop و ۶ Sell Stop (با اصلاح SL/TP فروش)    |
+//| اجرای استراتژی: تشخیص جهت + پوزیشن فوری + شبکه معلق             |
 //+------------------------------------------------------------------+
-void PlaceGrid()
+void ExecuteStrategy()
   {
-   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-
-   // ---- خریدها (Buy Stop) ----
-   double prevBuy = 0;
-   for(int i = 0; i < 6; i++)
+   // ---- تشخیص جهت اولین پوزیشن ----
+   int direction = -1; // -1 نامشخص
+   if(UseManualDirection)
      {
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      if(i == 0) prevBuy = ask;
-
-      double price, sl, tp;
-      double lot, stepPips, slDollar, tpDollar;
-
-      switch(i)
+      direction = (DirectionChoice == 0) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      Print("جهت دستی انتخاب شد: ", (direction == ORDER_TYPE_BUY ? "خرید" : "فروش"));
+     }
+   else
+     {
+      direction = DetectTrendFromEMA();
+      if(direction == -1)
         {
-         case 0: stepPips = Buy1_StepPips; lot = Buy1_Lot; slDollar = Buy1_SL; tpDollar = Buy1_TP; break;
-         case 1: stepPips = Buy2_StepPips; lot = Buy2_Lot; slDollar = Buy2_SL; tpDollar = Buy2_TP; break;
-         case 2: stepPips = Buy3_StepPips; lot = Buy3_Lot; slDollar = Buy3_SL; tpDollar = Buy3_TP; break;
-         case 3: stepPips = Buy4_StepPips; lot = Buy4_Lot; slDollar = Buy4_SL; tpDollar = Buy4_TP; break;
-         case 4: stepPips = Buy5_StepPips; lot = Buy5_Lot; slDollar = Buy5_SL; tpDollar = Buy5_TP; break;
-         case 5: stepPips = Buy6_StepPips; lot = Buy6_Lot; slDollar = Buy6_SL; tpDollar = Buy6_TP; break;
+         Print("خطا در تشخیص خودکار روند. اجرا متوقف شد.");
+         return;
         }
-
-      price = ask + stepPips * PipSize * _Point;
-
-      // فاصله ایمن از Ask برای Buy Stop
-      double minEntryDist = (stopsLevel + 2) * _Point;
-      if(price - ask < minEntryDist)
-         price = ask + minEntryDist;
-
-      // Buy: SL = پایین‌تر (false), TP = بالاتر (true)
-      sl = (slDollar > 0) ? CalculatePriceLevel(price, slDollar, lot, false) : 0;
-      tp = (tpDollar > 0) ? CalculatePriceLevel(price, tpDollar, lot, true) : 0;
-
-      PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, price, sl, tp, "BuyStop_" + IntegerToString(i+1));
-      Print("BuyStop ", i+1, " | Ask=", ask, " | Entry=", price,
-            " | SL=", sl, " TP=", tp);
-      prevBuy = price;
+      Print("جهت تشخیص‌داده‌شده بر اساس EMA(", TrendMAPeriod, "): ",
+            (direction == ORDER_TYPE_BUY ? "خرید" : "فروش"));
      }
 
-   // ---- فروش‌ها (Sell Stop) ----
-   double prevSell = 0;
-   for(int i = 0; i < 6; i++)
+   // ---- باز کردن پوزیشن فوری (Market Order) ----
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double slPrice = 0, tpPrice = 0;
+
+   if(direction == ORDER_TYPE_BUY)
      {
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      if(i == 0) prevSell = bid;
-
-      double price, sl, tp;
-      double lot, stepPips, slDollar, tpDollar;
-
-      switch(i)
-        {
-         case 0: stepPips = Sell1_StepPips; lot = Sell1_Lot; slDollar = Sell1_SL; tpDollar = Sell1_TP; break;
-         case 1: stepPips = Sell2_StepPips; lot = Sell2_Lot; slDollar = Sell2_SL; tpDollar = Sell2_TP; break;
-         case 2: stepPips = Sell3_StepPips; lot = Sell3_Lot; slDollar = Sell3_SL; tpDollar = Sell3_TP; break;
-         case 3: stepPips = Sell4_StepPips; lot = Sell4_Lot; slDollar = Sell4_SL; tpDollar = Sell4_TP; break;
-         case 4: stepPips = Sell5_StepPips; lot = Sell5_Lot; slDollar = Sell5_SL; tpDollar = Sell5_TP; break;
-         case 5: stepPips = Sell6_StepPips; lot = Sell6_Lot; slDollar = Sell6_SL; tpDollar = Sell6_TP; break;
-        }
-
-      price = bid - stepPips * PipSize * _Point;
-
-      double minEntryDist = (stopsLevel + 2) * _Point;
-      if(bid - price < minEntryDist)
-         price = bid - minEntryDist;
-
-      // Sell: SL = بالاتر (true), TP = پایین‌تر (false)  <-- تصحیح اینجا
-      sl = (slDollar > 0) ? CalculatePriceLevel(price, slDollar, lot, true) : 0;   // SL بالا
-      tp = (tpDollar > 0) ? CalculatePriceLevel(price, tpDollar, lot, false) : 0;  // TP پایین
-
-      PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, price, sl, tp, "SellStop_" + IntegerToString(i+1));
-      Print("SellStop ", i+1, " | Bid=", bid, " | Entry=", price,
-            " | SL=", sl, " TP=", tp);
-      prevSell = price;
+      slPrice = (SL_Dollar > 0) ? CalculatePriceLevel(ask, SL_Dollar, DefaultLot, false) : 0;
+      tpPrice = (TP_Dollar > 0) ? CalculatePriceLevel(ask, TP_Dollar, DefaultLot, true) : 0;
+      if(!PlaceMarketOrder(ORDER_TYPE_BUY, DefaultLot, slPrice, tpPrice, "Initial Buy"))
+         Print("خطا در ثبت خرید فوری!");
+     }
+   else // SELL
+     {
+      slPrice = (SL_Dollar > 0) ? CalculatePriceLevel(bid, SL_Dollar, DefaultLot, true) : 0;
+      tpPrice = (TP_Dollar > 0) ? CalculatePriceLevel(bid, TP_Dollar, DefaultLot, false) : 0;
+      if(!PlaceMarketOrder(ORDER_TYPE_SELL, DefaultLot, slPrice, tpPrice, "Initial Sell"))
+         Print("خطا در ثبت فروش فوری!");
      }
 
-   Print("شبکه کامل ۱۲ سفارش با موفقیت قرار داده شد.");
+   // ---- قرار دادن شبکه سفارشات معلق (Buy Stops بالا و Sell Stops پایین) ----
+   PlaceGrid();
   }
 
 //+------------------------------------------------------------------+
-//| ارسال سفارش معلق (Buy Stop / Sell Stop) – نسخه پایدار           |
+//| تشخیص روند با EMA (روی تایم‌فریم جاری)                          |
+//+------------------------------------------------------------------+
+int DetectTrendFromEMA()
+  {
+   // ساخت هندل EMA
+   int emaHandle = iMA(_Symbol, 0, TrendMAPeriod, TrendMAShift, TrendMAMethod, PRICE_CLOSE);
+   if(emaHandle == INVALID_HANDLE)
+     {
+      Print("خطا در ساخت EMA handle: ", GetLastError());
+      return -1;
+     }
+
+   double ema[1], close[1];
+   if(CopyBuffer(emaHandle, 0, 0, 1, ema) != 1)
+     {
+      Print("خطا در خواندن بافر EMA");
+      IndicatorRelease(emaHandle);
+      return -1;
+     }
+   if(CopyClose(_Symbol, 0, 0, 1, close) != 1)
+     {
+      Print("خطا در خواندن قیمت بسته شدن");
+      IndicatorRelease(emaHandle);
+      return -1;
+     }
+
+   IndicatorRelease(emaHandle);
+
+   // تصمیم‌گیری
+   if(close[0] > ema[0])
+      return ORDER_TYPE_BUY;
+   else
+      return ORDER_TYPE_SELL;
+  }
+
+//+------------------------------------------------------------------+
+//| باز کردن پوزیشن بازار (Market Order) با احتیاط کامل              |
+//+------------------------------------------------------------------+
+bool PlaceMarketOrder(ENUM_ORDER_TYPE type, double lot, double sl, double tp, string comment)
+  {
+   Sleep(30);
+   MqlTradeRequest request = {};
+   MqlTradeResult  result  = {};
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+
+   double price = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   long stopsLevel  = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long freezeLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minStopDist = (stopsLevel + freezeLevel + MinStopPaddingPips * g_PipSize) * _Point;
+
+   // اصلاح SL/TP برای رعایت حداقل فاصله
+   if(type == ORDER_TYPE_BUY)
+     {
+      if(sl > 0 && (price - sl) < minStopDist) sl = price - minStopDist;
+      if(tp > 0 && (tp - price) < minStopDist) tp = price + minStopDist;
+     }
+   else
+     {
+      if(sl > 0 && (sl - price) < minStopDist) sl = price + minStopDist;
+      if(tp > 0 && (price - tp) < minStopDist) tp = price - minStopDist;
+     }
+
+   // تلاش اول: با SL/TP
+   request.action    = TRADE_ACTION_DEAL;
+   request.symbol    = _Symbol;
+   request.volume    = lot;
+   request.price     = NormalizeDouble(price, digits);
+   request.type      = type;
+   request.sl        = (sl > 0) ? NormalizeDouble(sl, digits) : 0;
+   request.tp        = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
+   request.magic     = MagicNumber;
+   request.comment   = comment;
+   request.type_filling = ORDER_FILLING_FOK;
+   request.deviation    = 10;
+
+   if(OrderSend(request, result))
+     {
+      Print("پوزیشن ", comment, " (Ticket ", result.order, ") با موفقیت باز شد. ",
+            "Price=", price, " Lot=", lot, " SL=", sl, " TP=", tp);
+      return true;
+     }
+   else if(result.retcode == 10030 || result.retcode == 4756) // Invalid stops
+     {
+      Print("خطای استاپ (", result.retcode, "). تلاش بدون SL/TP...");
+      // تلاش دوم: بدون استاپ
+      request.sl = 0;
+      request.tp = 0;
+      if(OrderSend(request, result))
+        {
+         Print("پوزیشن ", comment, " (Ticket ", result.order, ") بدون استاپ باز شد. حالا استاپ‌ها را اضافه می‌کنیم.");
+         if(sl > 0 || tp > 0)
+           {
+            // کمی صبر می‌کنیم
+            Sleep(100);
+            if(PositionSelectByTicket(result.order))
+              {
+               if(!GridTrade.PositionModify(result.order, sl, tp))
+                  Print("اخطار: نتوانستیم SL/TP را اضافه کنیم. مجدداً تلاش می‌کنیم...");
+               else
+                  Print("SL/TP با موفقیت اضافه شد.");
+              }
+           }
+         return true;
+        }
+     }
+
+   // اگر هر دو روش شکست خورد
+   Print("Market Order error: ", GetLastError(),
+         " | Volume: ", lot, " Price: ", price,
+         " SL: ", sl, " TP: ", tp,
+         " | retcode=", result.retcode,
+         " | STOPS_LEVEL=", stopsLevel, " FreezeLevel=", freezeLevel);
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| قرار دادن شبکه سفارشات معلق (Buy/Sell Stop) با فاصله ثابت       |
+//+------------------------------------------------------------------+
+void PlaceGrid()
+  {
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist = (stopsLevel + 2) * _Point;
+
+   // ---- Buy Stops (بالای Ask) ----
+   double basePrice = ask;
+   for(int i = 1; i <= GridLevels; i++)
+     {
+      double entry = basePrice + i * GridPipStep * g_PipSize * _Point;
+      // اطمینان از فاصله کافی
+      if(entry - ask < minDist)
+         entry = ask + minDist;
+
+      double sl = (SL_Dollar > 0) ? CalculatePriceLevel(entry, SL_Dollar, DefaultLot, false) : 0;
+      double tp = (TP_Dollar > 0) ? CalculatePriceLevel(entry, TP_Dollar, DefaultLot, true) : 0;
+
+      PlacePendingOrder(ORDER_TYPE_BUY_STOP, DefaultLot, entry, sl, tp, "BuyStop_" + IntegerToString(i));
+     }
+
+   // ---- Sell Stops (پایین Bid) ----
+   basePrice = bid;
+   for(int i = 1; i <= GridLevels; i++)
+     {
+      double entry = basePrice - i * GridPipStep * g_PipSize * _Point;
+      if(bid - entry < minDist)
+         entry = bid - minDist;
+
+      double sl = (SL_Dollar > 0) ? CalculatePriceLevel(entry, SL_Dollar, DefaultLot, true) : 0;
+      double tp = (TP_Dollar > 0) ? CalculatePriceLevel(entry, TP_Dollar, DefaultLot, false) : 0;
+
+      PlacePendingOrder(ORDER_TYPE_SELL_STOP, DefaultLot, entry, sl, tp, "SellStop_" + IntegerToString(i));
+     }
+
+   Print("شبکه سفارشات معلق (", GridLevels, " خرید و ", GridLevels, " فروش) با موفقیت قرار داده شد.");
+  }
+
+//+------------------------------------------------------------------+
+//| ارسال سفارش معلق (Buy Stop / Sell Stop)                         |
 //+------------------------------------------------------------------+
 bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
                        double sl, double tp, string comment)
   {
-   Sleep(30); // مکث کوتاه برای جلوگیری از رد درخواست‌ها
-
+   Sleep(30);
    MqlTradeRequest request = {};
    MqlTradeResult  result  = {};
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
@@ -283,14 +369,15 @@ bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
    request.tp        = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
    request.magic     = MagicNumber;
    request.comment   = comment;
-   request.type_filling = ORDER_FILLING_RETURN;   // <-- تغییر کلیدی
+   request.type_filling = ORDER_FILLING_RETURN;   // نسخه‌ای که کار می‌کند
    request.type_time    = ORDER_TIME_GTC;
-   request.deviation    = 0;                     // برای سفارش معلق انحراف نداریم
+   request.deviation    = 0;
 
    if(!OrderSend(request, result))
      {
-      Print("OrderSend error: ", GetLastError(), " | Volume: ", lot,
-            " Entry: ", entry, " SL: ", sl, " TP: ", tp,
+      Print("OrderSend error: ", GetLastError(),
+            " | Volume: ", lot, " Entry: ", entry,
+            " SL: ", sl, " TP: ", tp,
             " | retcode=", result.retcode);
       return false;
      }
@@ -301,34 +388,24 @@ bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
   }
 
 //+------------------------------------------------------------------+
-//| محاسبه سطح قیمت SL/TP بر اساس دلار (اصلاح‌شده)                  |
+//| محاسبه سطح قیمت SL/TP از دلار                                    |
 //+------------------------------------------------------------------+
 double CalculatePriceLevel(double entryPrice, double dollarAmount, double lot, bool isTP)
   {
-   if(dollarAmount <= 0 || lot <= 0)
-      return 0;
+   if(dollarAmount <= 0 || lot <= 0) return 0;
 
-   // محاسبه صحیح ارزش یک پیپ
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double pipValue =
-   (tickValue / SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE))
-   * (_Point * PipSize)
-   * lot;
-   
+   double pipValue  = lot * tickValue * g_PipSize;  // ارزش یک پیپ
    if(pipValue == 0) return 0;
 
    double pipDistance = dollarAmount / pipValue;
-   double priceOffset = pipDistance * PipSize * _Point; // تبدیل به قیمت
+   double priceOffset = pipDistance * g_PipSize * _Point;
 
-   double level;
-   if(isTP)
-      level = entryPrice + priceOffset;
-   else
-      level = entryPrice - priceOffset;
+   double level = isTP ? entryPrice + priceOffset : entryPrice - priceOffset;
 
-   // رعایت حداقل فاصله مجاز (STOPS_LEVEL + 2 پیپ)
-   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDist = (stopsLevel + 2) * _Point; // حداقل فاصله مجاز
+   long stopsLevel  = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long freezeLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minDist = (stopsLevel + freezeLevel + 5 * g_PipSize) * _Point;
 
    if(isTP && (level - entryPrice) < minDist)
       level = entryPrice + minDist;
@@ -339,7 +416,7 @@ double CalculatePriceLevel(double entryPrice, double dollarAmount, double lot, b
   }
 
 //+------------------------------------------------------------------+
-//| بررسی سود/زیان کل و بستن همه در صورت رسیدن به هدف               |
+//| بررسی سود/زیان کل و بستن همه                                    |
 //+------------------------------------------------------------------+
 void CheckTotalProfitLoss()
   {
@@ -355,24 +432,27 @@ void CheckTotalProfitLoss()
         }
      }
 
-   if(totalProfit >= TotalProfitTarget && posCount > 0)
+   if(posCount > 0)
      {
-      Print("رسیدن به سود کل ", TotalProfitTarget, " دلار. بستن همه پوزیشن‌ها...");
-      CloseAll();
-      tradingDone = true;
-      isTradingActive = false;
-     }
-   else if(totalProfit <= TotalStopLoss && posCount > 0)
-     {
-      Print("رسیدن به ضرر کل ", TotalStopLoss, " دلار. بستن همه پوزیشن‌ها...");
-      CloseAll();
-      tradingDone = true;
-      isTradingActive = false;
+      if(totalProfit >= TotalProfitTarget)
+        {
+         Print("رسیدن به سود کل ", TotalProfitTarget, " دلار. بستن همه.");
+         CloseAll();
+         tradingDone = true;
+         isTradingActive = false;
+        }
+      else if(totalProfit <= TotalStopLoss)
+        {
+         Print("رسیدن به ضرر کل ", TotalStopLoss, " دلار. بستن همه.");
+         CloseAll();
+         tradingDone = true;
+         isTradingActive = false;
+        }
      }
   }
 
 //+------------------------------------------------------------------+
-//| بستن همه پوزیشن‌ها و حذف سفارشات معلق (با همین Magic)          |
+//| بستن همه پوزیشن‌ها و حذف سفارشات معلق                            |
 //+------------------------------------------------------------------+
 void CloseAll()
   {
@@ -380,20 +460,16 @@ void CloseAll()
      {
       ulong ticket = PositionGetTicket(i);
       if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == MagicNumber)
-        {
          if(!GridTrade.PositionClose(ticket))
             Print("خطا در بستن پوزیشن ", ticket);
-        }
      }
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
       ulong ticket = OrderGetTicket(i);
       if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC) == MagicNumber)
-        {
          if(!GridTrade.OrderDelete(ticket))
             Print("خطا در حذف سفارش ", ticket);
-        }
      }
 
    Print("تمام پوزیشن‌ها و سفارشات بسته شدند.");
