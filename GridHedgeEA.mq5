@@ -1,366 +1,506 @@
 //+------------------------------------------------------------------+
-//|                                GridHedge_Ultimate.mq5             |
-//|   سفارش اولیه بر اساس روند + شبکه پیپ + مدیریت پویا + دکمه دستی   |
+//|                                GridHedge_Ultimate_v4.mq5         |
+//|   شبکه گرید با محاسبات بر اساس Point (سازگار با همه نمادها)     |
+//|   نسخه ۴.۰ - جایگزینی پیپ با Point + مدیریت ریسک درصدی         |
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "2.50"
+#property version   "4.00"
 
 #include <Trade\Trade.mqh>
 
+#define DASHBOARD_LABEL "DashboardLabel"
+
+//===================================================================
+//  راهنمای تنظیم اعداد بر حسب نماد
+//
+//  _Point برای هر نماد:
+//    EURUSD / GBPUSD  → _Point = 0.00001  → 1 پیپ = 10 Point
+//    USDJPY / EURJPY  → _Point = 0.001    → 1 پیپ = 10 Point
+//    XAUUSD (طلا)     → _Point = 0.01     → 1 پیپ = 10 Point
+//    BTCUSD (بیتکوین) → _Point = 0.01     → 1 پیپ = 10 Point
+//
+//  مثال طلا (_Point=0.01):
+//    GridStep_Points = 500   → فاصله پله‌ها = 500 × 0.01 = 5.00 دلار
+//    SL_Points       = 2000  → حد ضرر       = 2000 × 0.01 = 20.00 دلار
+//    TP_Points       = 1000  → حد سود        = 1000 × 0.01 = 10.00 دلار
+//
+//  مثال بیتکوین (_Point=0.01):
+//    GridStep_Points = 50000 → فاصله پله‌ها = 50000 × 0.01 = 500 دلار
+//    SL_Points       = 100000→ حد ضرر       = 100000 × 0.01 = 1000 دلار
+//    TP_Points       = 50000 → حد سود        = 50000 × 0.01 = 500 دلار
+//
+//  مثال EURUSD (_Point=0.00001):
+//    GridStep_Points = 500   → فاصله پله‌ها = 500 × 0.00001 = 0.00500 = 50 پیپ
+//    SL_Points       = 200   → حد ضرر       = 200 × 0.00001 = 20 پیپ
+//    TP_Points       = 100   → حد سود        = 100 × 0.00001 = 10 پیپ
+//===================================================================
+
 //------------------------- INPUT PARAMETERS -------------------------
 input group "=== تنظیمات کلی ==="
-input bool     UseManualStart        = true;     // نمایش دکمه شروع دستی
-input bool     ShowCloseButtons       = true;      // نمایش دکمه‌های بستن سریع
-input bool     EnableTrading         = false;      // فعال‌سازی اولیه (در حالت خودکار)
-input bool     ResetGridOnStart      = false;      // حذف سفارشات قبلی و شروع دوباره
-input int      MagicNumber           = 202701;    // شماره جادویی
-input double   TotalProfitTarget     = 10.0;      // سود کل (دلار) - بستن همه
-input double   TotalStopLoss         = -50.0;     // ضرر کل (عدد منفی)
+input bool   UseManualStart    = true;     // نمایش دکمه شروع دستی
+input bool   ShowCloseButtons  = true;     // نمایش دکمه‌های بستن سریع
+input bool   EnableTrading     = false;    // فعال‌سازی اولیه (حالت خودکار)
+input bool   ResetGridOnStart  = false;    // حذف سفارشات قبلی و شروع دوباره
+input int    MagicNumber       = 202701;   // شماره جادویی
+input double TotalProfitTarget = 10.0;    // هدف سود کل (دلار)
+input double TotalStopLoss     = -50.0;   // حد ضرر کل (عدد منفی، دلار)
 
+input group "=== تشخیص روند ==="
+input bool             UseManualDirection  = false;   // انتخاب دستی جهت؟
+input int              DirectionChoice     = 0;       // 0=خرید  1=فروش
+input int              TrendMAPeriod       = 20;      // دوره EMA
+input int              TrendMAShift        = 0;
+input ENUM_MA_METHOD   TrendMAMethod       = MODE_EMA;
+input int              TrendConfirmCandles = 3;       // تعداد کندل‌های تأیید روند
 
-input group "=== تشخیص روند (پوزیشن اول) ==="
-input bool     UseManualDirection   = false;      // انتخاب دستی جهت؟
-input int      DirectionChoice      = 0;          // 0 = خرید, 1 = فروش (در صورت دستی)
-input int      TrendMAPeriod        = 20;         // دوره EMA
-input int      TrendMAShift         = 0;
-input ENUM_MA_METHOD TrendMAMethod  = MODE_EMA;
+input group "=== شبکه سفارشات (بر حسب Point) ==="
+input int    GridLevels        = 5;        // تعداد پله‌های اولیه Buy/Sell Stop
+input double GridStep_Points   = 500.0;   // فاصله بین پله‌ها (Point)
+//  طلا:    500  → 5.00$  |  BTC: 50000 → 500$  |  EUR: 500 → 50 pip
 
-input group "=== شبکه سفارشات معلق ==="
-input int      GridLevels           = 5;          // تعداد اولیه Buy/Sell Stop
-input double   GridPipStep          = 5.0;        // فاصله پله‌ها (پیپ)
+input group "=== مدیریت ریسک ==="
+input bool   UseRiskPercent    = true;     // مدیریت ریسک درصدی؟ (پیشنهادی)
+input double RiskPercent       = 1.0;     // درصد ریسک از موجودی برای هر پوزیشن
+input double FixedLot          = 0.01;    // حجم ثابت (فقط وقتی UseRiskPercent=false)
+input double SL_Points         = 0;  // حد ضرر (Point)
+input double TP_Points         = 200.0;  // حد سود (Point)
+//  طلا:  SL=2000 → 20$  TP=1000 → 10$
+//  BTC:  SL=100000 → 1000$  TP=50000 → 500$
+//  EUR:  SL=200 → 20pip  TP=100 → 10pip
 
-input group "=== مدیریت سرمایه و ریسک ==="
-input double   DefaultLot           = 0.01;       // حجم ثابت
-input double   SL_Pips              = 20.0;       // حد ضرر (پیپ)
-input double   TP_Pips              = 10.0;       // حد سود (پیپ)
+input group "=== Trailing Stop (بر حسب Point) ==="
+input bool   UseTrailingStop        = true;    // فعال‌سازی Trailing Stop
+input double TrailingStop_Points    = 800.0;   // فاصله Trailing از قیمت (Point)
+input double TrailingStep_Points    = 100.0;   // حداقل گام جابجایی SL (Point)
+input double TrailingActivate_Points= 500.0;   // سود لازم برای فعال‌شدن (Point)
+//  طلا:  Trailing=800 → 8$  Step=100 → 1$  Activate=500 → 5$
 
-input group "=== تعدیل سفارشات ==="
-input int      InitialMaxBuyExpansions  = 4;          // تعداد اولیه گسترش خرید (قابل تغییر با دکمه)
-input int      InitialMaxSellExpansions = 4;          // تعداد اولیه گسترش فروش (قابل تغییر با دکمه)
+input group "=== گسترش شبکه ==="
+input int    InitialMaxBuyExpansions  = 4;     // حداکثر گسترش خرید
+input int    InitialMaxSellExpansions = 4;     // حداکثر گسترش فروش
+
 //------------------------- GLOBAL VARIABLES -------------------------
 CTrade GridTrade;
 
-string g_GridID = "";   // شناسه‌ی یکتای شبکه‌ی فعلی
+string g_GridID            = "";
+bool   isTradingActive     = false;
+bool   tradingDone         = false;
 
-int    g_PipSize;
-bool   isTradingActive = false;
-bool   tradingDone     = false;
+double lastBuyExpansionPrice  = 0;
+double lastSellExpansionPrice = 0;
+int    buyExpansionCount      = 0;
+int    sellExpansionCount     = 0;
+int    g_MaxBuyExpansions;
+int    g_MaxSellExpansions;
 
-// متغیرهای تعدیل پویا
-double lastBuyExpansionPrice  = 0;   // آخرین قیمتی که از آن برای گسترش خرید استفاده شده
-double lastSellExpansionPrice = 0;   // آخرین قیمتی که از آن برای گسترش فروش استفاده شده
-int   buyExpansionCount  = 0;
-int   sellExpansionCount = 0;
-int   g_MaxBuyExpansions;
-int   g_MaxSellExpansions;
+// مقادیر محاسبه‌شده در زمان اجرا (برای نمایش در داشبورد)
+double g_ActualGridStep  = 0;
+double g_ActualSL        = 0;
+double g_ActualTP        = 0;
+double g_CurrentLot      = 0;
 
 //+------------------------------------------------------------------+
-//| Expert initialization                                            |
+//| چاپ اطلاعات تشخیصی نماد                                        |
+//+------------------------------------------------------------------+
+void PrintSymbolInfo()
+  {
+   double pointVal = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) /
+                     SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE) * _Point;
+
+   PrintFormat("══ اطلاعات نماد: %s ══", _Symbol);
+   PrintFormat("  _Point       = %.8f", _Point);
+   PrintFormat("  Digits       = %d",   (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+   PrintFormat("  TickSize     = %.8f", SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE));
+   PrintFormat("  TickValue    = %.5f", SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
+   PrintFormat("  ارزش هر Point برای ۱ لات = %.5f $", pointVal);
+   PrintFormat("  GridStep     = %.5f $ (%.0f Point)", GridStep_Points * _Point, GridStep_Points);
+   PrintFormat("  SL فاصله    = %.5f $ (%.0f Point)", SL_Points * _Point, SL_Points);
+   PrintFormat("  TP فاصله    = %.5f $ (%.0f Point)", TP_Points * _Point, TP_Points);
+  }
+
+//+------------------------------------------------------------------+
+//| محاسبه حجم لات بر اساس درصد ریسک                               |
+//+------------------------------------------------------------------+
+double CalcLot(double slPoints)
+  {
+   if(!UseRiskPercent || slPoints <= 0)
+      return FixedLot;
+
+   double balance    = AccountInfoDouble(ACCOUNT_BALANCE);
+   double riskAmount = balance * RiskPercent / 100.0;
+
+   double tickValue  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
+   // ارزش دلاری هر Point برای ۱ لات استاندارد
+   double pointValue = (tickSize > 0) ? (tickValue / tickSize * _Point) : 0;
+   if(pointValue <= 0)
+     {
+      Print("⚠️ خطا در محاسبه PointValue. از حجم ثابت استفاده می‌شود.");
+      return FixedLot;
+     }
+
+   double lot = riskAmount / (slPoints * pointValue);
+
+   double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   lot = MathFloor(lot / lotStep) * lotStep;
+   lot = MathMax(lot, minLot);
+   lot = MathMin(lot, maxLot);
+
+   PrintFormat("  CalcLot: Balance=%.2f | Risk=%.2f$ | SL=%.0fpt | PointVal=%.6f | Lot=%.2f",
+               balance, riskAmount, slPoints, pointValue, lot);
+   return lot;
+  }
+
+//+------------------------------------------------------------------+
+//| تبدیل Point به قیمت SL/TP                                       |
+//+------------------------------------------------------------------+
+double PointToPrice(double basePrice, double points, bool isSL, bool isBuy)
+  {
+   if(points <= 0) return 0;
+   double offset = points * _Point;
+   if(isBuy)
+      return isSL ? basePrice - offset : basePrice + offset;
+   else
+      return isSL ? basePrice + offset : basePrice - offset;
+  }
+
+//+------------------------------------------------------------------+
+//| OnInit                                                           |
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   g_PipSize = Getg_PipSize();
-   tradingDone = false;
-
+   tradingDone         = false;
    g_MaxBuyExpansions  = InitialMaxBuyExpansions;
    g_MaxSellExpansions = InitialMaxSellExpansions;
+   g_ActualGridStep    = GridStep_Points * _Point;
+   g_ActualSL          = SL_Points * _Point;
+   g_ActualTP          = TP_Points * _Point;
 
-   // ایجاد دکمه‌های بستن (در صورت فعال بودن) – مستقل از حالت شروع
-   if(ShowCloseButtons)
-      CreateCloseButtons();
+   PrintSymbolInfo();
 
-    CreateExpansionButtons();
+   if(ShowCloseButtons) CreateCloseButtons();
+   CreateExpansionButtons();
 
    if(UseManualStart)
      {
-      isTradingActive = false;                // دکمه فعال می‌کند
+      isTradingActive = false;
       CreateStartButton();
       Print("منتظر کلیک روی دکمه «شروع شبکه» باشید...");
-      return(INIT_SUCCEEDED);
+      return INIT_SUCCEEDED;
      }
 
-   // حالت خودکار
    isTradingActive = EnableTrading;
    if(!isTradingActive)
      {
       Print("EnableTrading = false؛ اجرا نمی‌شود.");
-      return(INIT_SUCCEEDED);
+      return INIT_SUCCEEDED;
      }
 
-   if(ResetGridOnStart)
-      DeleteAllOrdersAndPositions();
-
+   if(ResetGridOnStart) DeleteAllOrdersAndPositions();
    ExecuteStrategy();
-   lastBuyExpansionPrice  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   lastSellExpansionPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   return(INIT_SUCCEEDED);
+   return INIT_SUCCEEDED;
   }
 
 //+------------------------------------------------------------------+
-//| Deinitialization (پاک‌کردن دکمه)                                |
+//| OnDeinit                                                         |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   if(UseManualStart)
-      ObjectDelete(0, "BtnStartGrid");
-
-  ObjectDelete(0, "BtnCloseProfitable");
-  ObjectDelete(0, "BtnCloseAllGrid");
-
-  ObjectsDeleteAll(0, "BtnBuyExp");
+   ObjectDelete(0, "BtnStartGrid");
+   ObjectDelete(0, "BtnCloseProfitable");
+   ObjectDelete(0, "BtnCloseAllGrid");
+   ObjectsDeleteAll(0, "BtnBuyExp");
    ObjectsDeleteAll(0, "BtnSellExp");
    ObjectDelete(0, "LblBuyExp");
    ObjectDelete(0, "ValBuyExp");
    ObjectDelete(0, "LblSellExp");
    ObjectDelete(0, "ValSellExp");
+   ObjectDelete(0, DASHBOARD_LABEL);
+   Comment("");
   }
 
 //+------------------------------------------------------------------+
-//| Tick function                                                    |
+//| OnTick                                                           |
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   if(!isTradingActive || tradingDone)
-      return;
+   if(!isTradingActive || tradingDone) return;
 
+   if(UseTrailingStop) ManageTrailing();
    CheckGridExpansion();
    CheckTotalProfitLoss();
+   ShowDashboard();
   }
 
 //+------------------------------------------------------------------+
-//| رویدادهای نمودار (کلیک روی دکمه)                                 |
+//| OnChartEvent                                                     |
 //+------------------------------------------------------------------+
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
-   if(id == CHARTEVENT_OBJECT_CLICK && sparam == "BtnStartGrid")
-     {
-      StartGridByButton();
-     }
+   if(id != CHARTEVENT_OBJECT_CLICK) return;
 
-    if(id == CHARTEVENT_OBJECT_CLICK)
-     {
-      if(sparam == "BtnCloseProfitable")
-        {
-         CloseProfitableGrid();
-        }
-      else if(sparam == "BtnCloseAllGrid")
-        {
-         CloseAllGrid();
-        }
-     }
+   if(sparam == "BtnStartGrid")        { StartGridByButton();   return; }
+   if(sparam == "BtnCloseProfitable")  { CloseProfitableGrid(); return; }
+   if(sparam == "BtnCloseAllGrid")     { CloseAllGrid();        return; }
 
-       if(id == CHARTEVENT_OBJECT_CLICK)
+   if(sparam == "BtnBuyExpPlus")
      {
-      if(sparam == "BtnBuyExpPlus")
-        {
-         g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 1, 10);
-         ObjectSetString(0, "ValBuyExp", OBJPROP_TEXT, IntegerToString(g_MaxBuyExpansions));
-         Print("MaxBuyExpansions افزایش یافت به ", g_MaxBuyExpansions);
-        }
-      else if(sparam == "BtnBuyExpMinus")
-        {
-         g_MaxBuyExpansions = MathMax(g_MaxBuyExpansions - 1, 0);
-         ObjectSetString(0, "ValBuyExp", OBJPROP_TEXT, IntegerToString(g_MaxBuyExpansions));
-         Print("MaxBuyExpansions کاهش یافت به ", g_MaxBuyExpansions);
-        }
-      else if(sparam == "BtnSellExpPlus")
-        {
-         g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 1, 10);
-         ObjectSetString(0, "ValSellExp", OBJPROP_TEXT, IntegerToString(g_MaxSellExpansions));
-         Print("MaxSellExpansions افزایش یافت به ", g_MaxSellExpansions);
-        }
-      else if(sparam == "BtnSellExpMinus")
-        {
-         g_MaxSellExpansions = MathMax(g_MaxSellExpansions - 1, 0);
-         ObjectSetString(0, "ValSellExp", OBJPROP_TEXT, IntegerToString(g_MaxSellExpansions));
-         Print("MaxSellExpansions کاهش یافت به ", g_MaxSellExpansions);
-        }
+      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 1, 10);
+      ObjectSetString(0, "ValBuyExp", OBJPROP_TEXT, IntegerToString(g_MaxBuyExpansions));
+      Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
+      return;
+     }
+   if(sparam == "BtnBuyExpMinus")
+     {
+      g_MaxBuyExpansions = MathMax(g_MaxBuyExpansions - 1, 0);
+      ObjectSetString(0, "ValBuyExp", OBJPROP_TEXT, IntegerToString(g_MaxBuyExpansions));
+      Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
+      return;
+     }
+   if(sparam == "BtnSellExpPlus")
+     {
+      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 1, 10);
+      ObjectSetString(0, "ValSellExp", OBJPROP_TEXT, IntegerToString(g_MaxSellExpansions));
+      Print("MaxSellExpansions → ", g_MaxSellExpansions);
+      return;
+     }
+   if(sparam == "BtnSellExpMinus")
+     {
+      g_MaxSellExpansions = MathMax(g_MaxSellExpansions - 1, 0);
+      ObjectSetString(0, "ValSellExp", OBJPROP_TEXT, IntegerToString(g_MaxSellExpansions));
+      Print("MaxSellExpansions → ", g_MaxSellExpansions);
+      return;
      }
   }
 
-
-
 //+------------------------------------------------------------------+
-//| واکنش به کلیک دکمه: اگر شبکه‌ای نبود، اجرا کند                    |
+//| شروع شبکه با دکمه                                               |
 //+------------------------------------------------------------------+
 void StartGridByButton()
   {
-   // بررسی وجود هرگونه پوزیشن یا سفارش معلق با MagicNumber
    if(AnyGridExists())
      {
-      Print("شبکه در حال حاضر فعال است. ابتدا آن را ببندید.");
+      Print("⚠️ شبکه در حال حاضر فعال است. ابتدا آن را ببندید.");
       return;
      }
-
-   Print("ایجاد شبکه جدید با دکمه...");
+   Print("▶ ایجاد شبکه جدید...");
    isTradingActive = true;
    tradingDone     = false;
    ExecuteStrategy();
-   lastBuyExpansionPrice  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   lastSellExpansionPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-   buyExpansionCount  = 0;
-   sellExpansionCount = 0;
   }
 
 //+------------------------------------------------------------------+
-//| بررسی وجود پوزیشن یا سفارش معلق                                  |
+//| بررسی وجود پوزیشن یا سفارش                                     |
 //+------------------------------------------------------------------+
 bool AnyGridExists()
   {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
-      ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket))
-         if(PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
-            PositionGetString(POSITION_SYMBOL) == _Symbol)
-            return true;
+      ulong t = PositionGetTicket(i);
+      if(PositionSelectByTicket(t) &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+         PositionGetString(POSITION_SYMBOL) == _Symbol)
+         return true;
      }
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket))
-         if(OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
-            OrderGetString(ORDER_SYMBOL) == _Symbol)
-            return true;
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol)
+         return true;
      }
    return false;
   }
 
 //+------------------------------------------------------------------+
-//| تشخیص خودکار PipSize                                             |
-//+------------------------------------------------------------------+
-int Getg_PipSize()
-  {
-   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   switch(digits)
-     {
-      case 2: case 3: return 10;  // طلا و نمادهای ۲/۳ رقمی
-      case 4:         return 1;
-      case 5: default: return 10;
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| اجرای استراتژی: Limit اولیه + شبکه معلق                         |
+//| اجرای استراتژی اصلی                                             |
 //+------------------------------------------------------------------+
 void ExecuteStrategy()
   {
+   g_GridID = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES|TIME_SECONDS);
+
    int direction = -1;
    if(UseManualDirection)
      {
       direction = (DirectionChoice == 0) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      Print("جهت دستی: ", direction == ORDER_TYPE_BUY ? "خرید" : "فروش");
+      Print("جهت دستی: ", direction == ORDER_TYPE_BUY ? "خرید ▲" : "فروش ▼");
      }
    else
      {
       direction = DetectTrendFromEMA();
-      if(direction == -1) return;
-      Print("جهت EMA(", TrendMAPeriod, "): ", direction == ORDER_TYPE_BUY ? "خرید" : "فروش");
+      if(direction == -1)
+        {
+         Print("⚠️ بازار رنج است. شبکه اجرا نشد.");
+         isTradingActive = false;
+         return;
+        }
+      Print("جهت EMA(", TrendMAPeriod, "): ", direction == ORDER_TYPE_BUY ? "خرید ▲" : "فروش ▼");
      }
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double slPrice = 0, tpPrice = 0;
+
+   // محاسبه حجم بر اساس SL
+   g_CurrentLot = CalcLot(SL_Points);
 
    if(direction == ORDER_TYPE_BUY)
      {
-      slPrice = (SL_Pips > 0) ? PipToPrice(ask, SL_Pips, true, true) : 0;
-      tpPrice = (TP_Pips > 0) ? PipToPrice(ask, TP_Pips, false, true) : 0;
-      if(!PlaceInitialLimit(ORDER_TYPE_BUY, DefaultLot, slPrice, tpPrice, "Initial Buy"))
-         Print("خطا در Limit خرید");
+      double sl = (SL_Points > 0) ? PointToPrice(ask, SL_Points, true,  true) : 0;
+      double tp = (TP_Points > 0) ? PointToPrice(ask, TP_Points, false, true) : 0;
+      PlaceInitialLimit(ORDER_TYPE_BUY, g_CurrentLot, sl, tp, "Initial Buy");
      }
    else
      {
-      slPrice = (SL_Pips > 0) ? PipToPrice(bid, SL_Pips, true, false) : 0;
-      tpPrice = (TP_Pips > 0) ? PipToPrice(bid, TP_Pips, false, false) : 0;
-      if(!PlaceInitialLimit(ORDER_TYPE_SELL, DefaultLot, slPrice, tpPrice, "Initial Sell"))
-         Print("خطا در Limit فروش");
+      double sl = (SL_Points > 0) ? PointToPrice(bid, SL_Points, true,  false) : 0;
+      double tp = (TP_Points > 0) ? PointToPrice(bid, TP_Points, false, false) : 0;
+      PlaceInitialLimit(ORDER_TYPE_SELL, g_CurrentLot, sl, tp, "Initial Sell");
      }
 
    PlaceGrid();
 
-   g_GridID = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES|TIME_SECONDS);
-
-   // ---- مقداردهی نقاط مرجع برای گسترش شبکه ----
    lastBuyExpansionPrice  = FindHighestBuyStopPrice();
    lastSellExpansionPrice = FindLowestSellStopPrice();
-
-   buyExpansionCount  = 0;
-   sellExpansionCount = 0;
+   buyExpansionCount      = 0;
+   sellExpansionCount     = 0;
   }
 
 //+------------------------------------------------------------------+
-//| تشخیص روند با EMA                                                |
+//| تشخیص روند - چند کندل + شیب EMA                                |
 //+------------------------------------------------------------------+
 int DetectTrendFromEMA()
   {
-   int emaHandle = iMA(_Symbol, 0, TrendMAPeriod, TrendMAShift, TrendMAMethod, PRICE_CLOSE);
-   if(emaHandle == INVALID_HANDLE) { Print("خطا در EMA"); return -1; }
+   int needed = MathMax(TrendConfirmCandles, 1) + 1;
 
-   double ema[1], close[1];
-   if(CopyBuffer(emaHandle, 0, 0, 1, ema) != 1 || CopyClose(_Symbol, 0, 0, 1, close) != 1)
+   int handle = iMA(_Symbol, 0, TrendMAPeriod, TrendMAShift, TrendMAMethod, PRICE_CLOSE);
+   if(handle == INVALID_HANDLE) { Print("خطا در EMA handle"); return -1; }
+
+   double ema[], cls[];
+   ArraySetAsSeries(ema, true);
+   ArraySetAsSeries(cls, true);
+
+   bool ok = (CopyBuffer(handle, 0, 0, needed, ema) == needed) &&
+             (CopyClose(_Symbol, 0, 0, needed, cls)  == needed);
+   IndicatorRelease(handle);
+   if(!ok) { Print("خطا در کپی داده EMA"); return -1; }
+
+   int confirm   = MathMax(TrendConfirmCandles, 1);
+   bool bullish  = true, bearish = true;
+   for(int i = 0; i < confirm; i++)
      {
-      Print("خطا در کپی داده");
-      IndicatorRelease(emaHandle);
-      return -1;
+      if(cls[i] <= ema[i]) bullish = false;
+      if(cls[i] >= ema[i]) bearish = false;
      }
-   IndicatorRelease(emaHandle);
-   return (close[0] > ema[0]) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+
+   bool slopeUp   = ema[0] > ema[confirm];
+   bool slopeDown = ema[0] < ema[confirm];
+
+   if(bullish && slopeUp)   return ORDER_TYPE_BUY;
+   if(bearish && slopeDown) return ORDER_TYPE_SELL;
+   return -1;
   }
 
 //+------------------------------------------------------------------+
-//| Limit Order اولیه با فاصله‌ی ۰.۵ پیپ                              |
+//| Trailing Stop - بر حسب Point                                    |
+//+------------------------------------------------------------------+
+void ManageTrailing()
+  {
+   double trail    = TrailingStop_Points    * _Point;
+   double step     = TrailingStep_Points    * _Point;
+   double activate = TrailingActivate_Points * _Point;
+   int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp   = PositionGetDouble(POSITION_TP);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      long   type = PositionGetInteger(POSITION_TYPE);
+
+      if(type == POSITION_TYPE_BUY)
+        {
+         double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         double profit = bid - open;
+         if(profit < activate) continue;
+
+         double newSL = NormalizeDouble(bid - trail, digits);
+         if(newSL > sl + step && newSL > open)
+            GridTrade.PositionModify(ticket, newSL, tp);
+        }
+      else if(type == POSITION_TYPE_SELL)
+        {
+         double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double profit = open - ask;
+         if(profit < activate) continue;
+
+         double newSL = NormalizeDouble(ask + trail, digits);
+         if((sl == 0 || newSL < sl - step) && newSL < open)
+            GridTrade.PositionModify(ticket, newSL, tp);
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Limit Order اولیه                                                |
 //+------------------------------------------------------------------+
 bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, string comment)
   {
    Sleep(30);
-   MqlTradeRequest request = {};
-   MqlTradeResult  result  = {};
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
-   double price;
-   if(type == ORDER_TYPE_BUY)
-      price = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - 0.5 * g_PipSize * _Point;
-   else
-      price = SymbolInfoDouble(_Symbol, SYMBOL_BID) + 0.5 * g_PipSize * _Point;
+   // ورود کمی داخل‌تر از قیمت بازار (نصف GridStep)
+   double halfStep = (GridStep_Points / 2.0) * _Point;
+   double price = (type == ORDER_TYPE_BUY)
+                  ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) - halfStep
+                  : SymbolInfoDouble(_Symbol, SYMBOL_BID) + halfStep;
 
-   long stopsLevel  = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   long freezeLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
-   double minStopDist = (stopsLevel + freezeLevel + 10 * g_PipSize) * _Point;
+   // بررسی حداقل فاصله بروکر
+   long   stopsLvl   = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long   freezeLvl  = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minDist    = (stopsLvl + freezeLvl + 2) * _Point;
 
    if(type == ORDER_TYPE_BUY)
      {
-      if(sl > 0 && (price - sl) < minStopDist) sl = price - minStopDist;
-      if(tp > 0 && (tp - price) < minStopDist) tp = price + minStopDist;
+      if(sl > 0 && (price - sl) < minDist) sl = price - minDist;
+      if(tp > 0 && (tp - price) < minDist) tp = price + minDist;
      }
    else
      {
-      if(sl > 0 && (sl - price) < minStopDist) sl = price + minStopDist;
-      if(tp > 0 && (price - tp) < minStopDist) tp = price - minStopDist;
+      if(sl > 0 && (sl - price) < minDist) sl = price + minDist;
+      if(tp > 0 && (price - tp) < minDist) tp = price - minDist;
      }
 
-   request.action    = TRADE_ACTION_PENDING;
-   request.symbol    = _Symbol;
-   request.volume    = lot;
-   request.price     = NormalizeDouble(price, digits);
-   request.type      = (type == ORDER_TYPE_BUY) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
-   request.sl        = (sl > 0) ? NormalizeDouble(sl, digits) : 0;
-   request.tp        = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
-   request.magic     = MagicNumber;
-   string fullComment = "[" + g_GridID + "] " + comment;
-   request.comment   = fullComment;
-   request.type_filling = ORDER_FILLING_RETURN;
-   request.type_time    = ORDER_TIME_GTC;
-   request.deviation    = 0;
+   MqlTradeRequest req = {};
+   MqlTradeResult  res = {};
+   req.action       = TRADE_ACTION_PENDING;
+   req.symbol       = _Symbol;
+   req.volume       = lot;
+   req.price        = NormalizeDouble(price, digits);
+   req.type         = (type == ORDER_TYPE_BUY) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
+   req.sl           = (sl > 0) ? NormalizeDouble(sl, digits) : 0;
+   req.tp           = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
+   req.magic        = MagicNumber;
+   req.comment      = "[" + g_GridID + "] " + comment;
+   req.type_filling = ORDER_FILLING_RETURN;
+   req.type_time    = ORDER_TIME_GTC;
 
-   if(!OrderSend(request, result))
+   if(!OrderSend(req, res))
      {
-      Print("Limit Order error: ", GetLastError(), " retcode=", result.retcode);
+      PrintFormat("❌ Limit خطا: err=%d retcode=%d", GetLastError(), res.retcode);
       return false;
      }
-   Print("Limit ", comment, " (Ticket ", result.order, ") ثبت شد. Price=", price);
+   PrintFormat("✅ %s | Price=%.5f | SL=%.5f | TP=%.5f | Lot=%.2f",
+               comment, price, sl, tp, lot);
    return true;
   }
 
@@ -369,501 +509,547 @@ bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, s
 //+------------------------------------------------------------------+
 void PlaceGrid()
   {
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDist = (stopsLevel + 2) * _Point;
+   double ask      = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid      = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   long   stopsLvl = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist  = (stopsLvl + 2) * _Point;
+   double step     = GridStep_Points * _Point;
 
-   double baseBuy = ask;
    for(int i = 1; i <= GridLevels; i++)
      {
-      double entry = baseBuy + i * GridPipStep * g_PipSize * _Point;
+      double entry = ask + i * step;
       if(entry - ask < minDist) entry = ask + minDist;
-      double sl = (SL_Pips > 0) ? PipToPrice(entry, SL_Pips, true, true) : 0;
-      double tp = (TP_Pips > 0) ? PipToPrice(entry, TP_Pips, false, true) : 0;
-      PlacePendingOrder(ORDER_TYPE_BUY_STOP, DefaultLot, entry, sl, tp, "BuyStop_"+IntegerToString(i));
+      double lot = CalcLot(SL_Points);
+      double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  true) : 0;
+      double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, true) : 0;
+      PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, entry, sl, tp,
+                        "BuyStop_" + IntegerToString(i));
      }
 
-   double baseSell = bid;
    for(int i = 1; i <= GridLevels; i++)
      {
-      double entry = baseSell - i * GridPipStep * g_PipSize * _Point;
+      double entry = bid - i * step;
       if(bid - entry < minDist) entry = bid - minDist;
-      double sl = (SL_Pips > 0) ? PipToPrice(entry, SL_Pips, true, false) : 0;
-      double tp = (TP_Pips > 0) ? PipToPrice(entry, TP_Pips, false, false) : 0;
-      PlacePendingOrder(ORDER_TYPE_SELL_STOP, DefaultLot, entry, sl, tp, "SellStop_"+IntegerToString(i));
+      double lot = CalcLot(SL_Points);
+      double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  false) : 0;
+      double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, false) : 0;
+      PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, entry, sl, tp,
+                        "SellStop_" + IntegerToString(i));
      }
-   Print("شبکه اولیه قرار داده شد.");
+   Print("✅ شبکه اولیه ثبت شد.");
   }
 
 //+------------------------------------------------------------------+
-//| ثبت سفارش معلق                                                   |
+//| ثبت سفارش معلق                                                  |
 //+------------------------------------------------------------------+
 bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
                        double sl, double tp, string comment)
   {
    Sleep(30);
-   MqlTradeRequest request = {};
-   MqlTradeResult  result  = {};
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
-   request.action    = TRADE_ACTION_PENDING;
-   request.symbol    = _Symbol;
-   request.volume    = lot;
-   request.price     = NormalizeDouble(entry, digits);
-   request.type      = type;
-   request.sl        = (sl > 0) ? NormalizeDouble(sl, digits) : 0;
-   request.tp        = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
-   request.magic     = MagicNumber;
-   string fullComment = "[" + g_GridID + "] " + comment;
-   request.comment   = fullComment;
-   request.type_filling = ORDER_FILLING_RETURN;
-   request.type_time    = ORDER_TIME_GTC;
-   request.deviation    = 0;
+   MqlTradeRequest req = {};
+   MqlTradeResult  res = {};
+   req.action       = TRADE_ACTION_PENDING;
+   req.symbol       = _Symbol;
+   req.volume       = lot;
+   req.price        = NormalizeDouble(entry, digits);
+   req.type         = type;
+   req.sl           = (sl > 0) ? NormalizeDouble(sl, digits) : 0;
+   req.tp           = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
+   req.magic        = MagicNumber;
+   req.comment      = "[" + g_GridID + "] " + comment;
+   req.type_filling = ORDER_FILLING_RETURN;
+   req.type_time    = ORDER_TIME_GTC;
 
-   if(!OrderSend(request, result))
+   if(!OrderSend(req, res))
      {
-      Print("OrderSend error: ", GetLastError(), " retcode=", result.retcode);
+      PrintFormat("❌ OrderSend خطا: err=%d retcode=%d comment=%s", GetLastError(), res.retcode, comment);
       return false;
      }
-   Print("سفارش ", comment, " (Ticket ", result.order, ") ثبت شد. Entry=", entry);
+   PrintFormat("✅ %s | Entry=%.5f | SL=%.5f | TP=%.5f | Lot=%.2f",
+               comment, entry, sl, tp, lot);
    return true;
   }
 
 //+------------------------------------------------------------------+
-//| تبدیل فاصله پیپ به قیمت (SL/TP)                                  |
-//+------------------------------------------------------------------+
-double PipToPrice(double entryPrice, double pips, bool isSL, bool isBuy)
-  {
-   if(pips <= 0) return 0;
-   double offset = pips * g_PipSize * _Point;
-   if(isBuy)
-      return isSL ? entryPrice - offset : entryPrice + offset;  // Buy: SL پایین, TP بالا
-   else
-      return isSL ? entryPrice + offset : entryPrice - offset;  // Sell: SL بالا, TP پایین
-  }
-
-//+------------------------------------------------------------------+
-//| حذف سفارشات و بستن پوزیشن‌ها                                     |
-//+------------------------------------------------------------------+
-void DeleteAllOrdersAndPositions()
-  {
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
-        OrderGetString(ORDER_SYMBOL) == _Symbol )
-         if(!GridTrade.OrderDelete(ticket))
-            Print("خطا در حذف سفارش ", ticket);
-     }
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
-        OrderGetString(ORDER_SYMBOL) == _Symbol)
-         if(!GridTrade.PositionClose(ticket))
-            Print("خطا در بستن پوزیشن ", ticket);
-     }
-  }
-
-
-//+------------------------------------------------------------------+
-//| بررسی گسترش شبکه با رعایت محدودیت تعداد                           |
+//| گسترش شبکه                                                      |
 //+------------------------------------------------------------------+
 void CheckGridExpansion()
   {
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double step = GridPipStep * g_PipSize * _Point;
+   double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double step = GridStep_Points * _Point;
 
-   // ---- خرید (صعودی) ----
    if(ask >= lastBuyExpansionPrice + step)
      {
       if(buyExpansionCount < g_MaxBuyExpansions)
         {
-         Print("█████ سیگنال گسترش خرید (", buyExpansionCount+1, " از ", g_MaxBuyExpansions, ") █████");
-         Print("Ask=", ask, " | lastBuyExpansionPrice=", lastBuyExpansionPrice,
-               " | آستانه=", lastBuyExpansionPrice + step);
+         PrintFormat("█ گسترش خرید %d/%d | Ask=%.5f", buyExpansionCount+1, g_MaxBuyExpansions, ask);
          BuyAdjustment();
-         lastBuyExpansionPrice = lastBuyExpansionPrice + step;
          buyExpansionCount++;
-         Print("lastBuyExpansionPrice جدید = ", lastBuyExpansionPrice);
         }
-      else
-        {
-         // به‌روزرسانی نقطه مرجع حتی بدون گسترش برای جلوگیری از چاپ مکرر پیغام
-         lastBuyExpansionPrice = lastBuyExpansionPrice + step;
-         Print("حداکثر گسترش خرید (", g_MaxBuyExpansions, ") انجام شده است. گسترش جدید انجام نشد.");
-        }
+      lastBuyExpansionPrice += step;
      }
 
-   // ---- فروش (نزولی) ----
    if(bid <= lastSellExpansionPrice - step)
      {
       if(sellExpansionCount < g_MaxSellExpansions)
         {
-         Print("█████ سیگنال گسترش فروش (", sellExpansionCount+1, " از ", g_MaxSellExpansions, ") █████");
-         Print("Bid=", bid, " | lastSellExpansionPrice=", lastSellExpansionPrice,
-               " | آستانه=", lastSellExpansionPrice - step);
+         PrintFormat("█ گسترش فروش %d/%d | Bid=%.5f", sellExpansionCount+1, g_MaxSellExpansions, bid);
          SellAdjustment();
-         lastSellExpansionPrice = lastSellExpansionPrice - step;
          sellExpansionCount++;
-         Print("lastSellExpansionPrice جدید = ", lastSellExpansionPrice);
         }
-      else
-        {
-         lastSellExpansionPrice = lastSellExpansionPrice - step;
-         Print("حداکثر گسترش فروش (", g_MaxSellExpansions, ") انجام شده است. گسترش جدید انجام نشد.");
-        }
+      lastSellExpansionPrice -= step;
      }
   }
 
-
+//+------------------------------------------------------------------+
 void BuyAdjustment()
   {
-   double maxBuyPrice = 0;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC)==MagicNumber && OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_BUY_STOP &&
-        OrderGetString(ORDER_SYMBOL) == _Symbol)
-        {
-         double price = OrderGetDouble(ORDER_PRICE_OPEN);
-         if(price > maxBuyPrice) maxBuyPrice = price;
-        }
-     }
-   if(maxBuyPrice == 0) maxBuyPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double maxPrice = FindHighestBuyStopPrice();
+   double step     = GridStep_Points * _Point;
+   double newPrice = maxPrice + step;
 
-   double newPrice = maxBuyPrice + GridPipStep * g_PipSize * _Point;
    for(int i = 0; i < 2; i++)
      {
-      double sl = (SL_Pips > 0) ? PipToPrice(newPrice, SL_Pips, true, true) : 0;
-      double tp = (TP_Pips > 0) ? PipToPrice(newPrice, TP_Pips, false, true) : 0;
-      if(PlacePendingOrder(ORDER_TYPE_BUY_STOP, DefaultLot, newPrice, sl, tp, "Buy_Dyn"))
-         newPrice += GridPipStep * g_PipSize * _Point;
+      double lot = CalcLot(SL_Points);
+      double sl  = (SL_Points > 0) ? PointToPrice(newPrice, SL_Points, true,  true) : 0;
+      double tp  = (TP_Points > 0) ? PointToPrice(newPrice, TP_Points, false, true) : 0;
+      if(PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, newPrice, sl, tp, "Buy_Dyn"))
+         newPrice += step;
       else break;
      }
    DeleteClosestSellStops(2);
   }
 
+//+------------------------------------------------------------------+
 void SellAdjustment()
   {
-   double minSellPrice = DBL_MAX;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC)==MagicNumber &&
-        OrderGetString(ORDER_SYMBOL) == _Symbol &&
-        OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_SELL_STOP)
-        {
-         double price = OrderGetDouble(ORDER_PRICE_OPEN);
-         if(price < minSellPrice) minSellPrice = price;
-        }
-     }
-   if(minSellPrice == DBL_MAX) minSellPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double minPrice = FindLowestSellStopPrice();
+   double step     = GridStep_Points * _Point;
+   double newPrice = minPrice - step;
 
-   double newPrice = minSellPrice - GridPipStep * g_PipSize * _Point;
    for(int i = 0; i < 2; i++)
      {
-      double sl = (SL_Pips > 0) ? PipToPrice(newPrice, SL_Pips, true, false) : 0;
-      double tp = (TP_Pips > 0) ? PipToPrice(newPrice, TP_Pips, false, false) : 0;
-      if(PlacePendingOrder(ORDER_TYPE_SELL_STOP, DefaultLot, newPrice, sl, tp, "Sell_Dyn"))
-         newPrice -= GridPipStep * g_PipSize * _Point;
+      double lot = CalcLot(SL_Points);
+      double sl  = (SL_Points > 0) ? PointToPrice(newPrice, SL_Points, true,  false) : 0;
+      double tp  = (TP_Points > 0) ? PointToPrice(newPrice, TP_Points, false, false) : 0;
+      if(PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, newPrice, sl, tp, "Sell_Dyn"))
+         newPrice -= step;
       else break;
      }
    DeleteClosestBuyStops(2);
   }
 
+//+------------------------------------------------------------------+
 void DeleteClosestSellStops(int count)
   {
    ulong tickets[]; double prices[];
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   for(int i = OrdersTotal()-1; i >= 0; i--)
      {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC)==MagicNumber && OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_SELL_STOP
-        && OrderGetString(ORDER_SYMBOL) == _Symbol    
-    )
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_SELL_STOP)
         {
-         int s = ArraySize(tickets); ArrayResize(tickets, s+1); ArrayResize(prices, s+1);
-         tickets[s] = ticket; prices[s] = OrderGetDouble(ORDER_PRICE_OPEN);
+         int s = ArraySize(tickets);
+         ArrayResize(tickets, s+1); ArrayResize(prices, s+1);
+         tickets[s] = t; prices[s] = OrderGetDouble(ORDER_PRICE_OPEN);
         }
      }
-   // مرتب‌سازی نزولی (بزرگترین نزدیک‌ترین)
-   for(int i = ArraySize(prices)-1; i>0; i--) for(int j=0; j<i; j++)
-        if(prices[j] < prices[j+1]) { double t=prices[j]; prices[j]=prices[j+1]; prices[j+1]=t; ulong u=tickets[j]; tickets[j]=tickets[j+1]; tickets[j+1]=u; }
-   for(int i = 0; i < count && i < ArraySize(tickets); i++) GridTrade.OrderDelete(tickets[i]);
+   // نزولی مرتب کن (بزرگترین = نزدیک‌ترین)
+   for(int i=ArraySize(prices)-1; i>0; i--)
+      for(int j=0; j<i; j++)
+         if(prices[j] < prices[j+1])
+           {
+            double td=prices[j];  prices[j]=prices[j+1];  prices[j+1]=td;
+            ulong  tu=tickets[j]; tickets[j]=tickets[j+1]; tickets[j+1]=tu;
+           }
+   for(int i=0; i<count && i<ArraySize(tickets); i++)
+      GridTrade.OrderDelete(tickets[i]);
   }
 
+//+------------------------------------------------------------------+
 void DeleteClosestBuyStops(int count)
   {
    ulong tickets[]; double prices[];
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   for(int i = OrdersTotal()-1; i >= 0; i--)
      {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC)==MagicNumber && OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_BUY_STOP &&
-        OrderGetString(ORDER_SYMBOL) == _Symbol
-    )
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_BUY_STOP)
         {
-         int s = ArraySize(tickets); ArrayResize(tickets, s+1); ArrayResize(prices, s+1);
-         tickets[s] = ticket; prices[s] = OrderGetDouble(ORDER_PRICE_OPEN);
+         int s = ArraySize(tickets);
+         ArrayResize(tickets, s+1); ArrayResize(prices, s+1);
+         tickets[s] = t; prices[s] = OrderGetDouble(ORDER_PRICE_OPEN);
         }
      }
-   // مرتب‌سازی صعودی (کوچکترین نزدیک‌ترین)
-   for(int i = ArraySize(prices)-1; i>0; i--) for(int j=0; j<i; j++)
-        if(prices[j] > prices[j+1]) { double t=prices[j]; prices[j]=prices[j+1]; prices[j+1]=t; ulong u=tickets[j]; tickets[j]=tickets[j+1]; tickets[j+1]=u; }
-   for(int i = 0; i < count && i < ArraySize(tickets); i++) GridTrade.OrderDelete(tickets[i]);
+   // صعودی مرتب کن (کوچکترین = نزدیک‌ترین)
+   for(int i=ArraySize(prices)-1; i>0; i--)
+      for(int j=0; j<i; j++)
+         if(prices[j] > prices[j+1])
+           {
+            double td=prices[j];  prices[j]=prices[j+1];  prices[j+1]=td;
+            ulong  tu=tickets[j]; tickets[j]=tickets[j+1]; tickets[j+1]=tu;
+           }
+   for(int i=0; i<count && i<ArraySize(tickets); i++)
+      GridTrade.OrderDelete(tickets[i]);
   }
 
 //+------------------------------------------------------------------+
-//| بررسی سود/زیان کل و بستن همه                                    |
+//| بررسی سود/زیان کل                                               |
 //+------------------------------------------------------------------+
 void CheckTotalProfitLoss()
   {
-   double totalProfit = 0.0; int posCount = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   double totalProfit = 0;
+   int    posCount    = 0;
+
+   for(int i = PositionsTotal()-1; i >= 0; i--)
      {
-      ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == MagicNumber && 
-        OrderGetString(ORDER_SYMBOL) == _Symbol)
+      ulong t = PositionGetTicket(i);
+      if(PositionSelectByTicket(t) &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+         PositionGetString(POSITION_SYMBOL) == _Symbol)
         { totalProfit += PositionGetDouble(POSITION_PROFIT); posCount++; }
      }
-   if(posCount > 0)
+   if(posCount == 0) return;
+
+   if(totalProfit >= TotalProfitTarget)
      {
-      if(totalProfit >= TotalProfitTarget) { Print("حد سود برای همه سفارشات برآروده شد. کل سفارشات بسته می شوند"); CloseAll(); tradingDone = true; isTradingActive = false; }
-      else if(totalProfit <= TotalStopLoss) { Print("حد ضرر برای مجموع سفارشات فعال شد.همه سفارشات بسته می شوند"); CloseAll(); tradingDone = true; isTradingActive = false; }
+      PrintFormat("✅ هدف سود کل برآورده شد: %.2f$", totalProfit);
+      CloseAll(); tradingDone = true; isTradingActive = false;
+     }
+   else if(totalProfit <= TotalStopLoss)
+     {
+      PrintFormat("🛑 حد ضرر کل فعال شد: %.2f$", totalProfit);
+      CloseAll(); tradingDone = true; isTradingActive = false;
      }
   }
 
 //+------------------------------------------------------------------+
-//| بستن همه پوزیشن‌ها و سفارشات                                    |
+//| بستن همه                                                        |
 //+------------------------------------------------------------------+
 void CloseAll()
   {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   for(int i = PositionsTotal()-1; i >= 0; i--)
      {
-      ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
-        OrderGetString(ORDER_SYMBOL) == _Symbol)
-         GridTrade.PositionClose(ticket);
+      ulong t = PositionGetTicket(i);
+      if(PositionSelectByTicket(t) &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+         PositionGetString(POSITION_SYMBOL) == _Symbol)
+         GridTrade.PositionClose(t);
      }
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   for(int i = OrdersTotal()-1; i >= 0; i--)
      {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC) == MagicNumber && 
-        OrderGetString(ORDER_SYMBOL) == _Symbol)
-         GridTrade.OrderDelete(ticket);
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol)
+         GridTrade.OrderDelete(t);
      }
    Print("تمام پوزیشن‌ها و سفارشات بسته شدند.");
   }
 
-  //+------------------------------------------------------------------+
-//| بستن فقط پوزیشن‌های سودده (و حذف سفارشات معلق)                  |
+//+------------------------------------------------------------------+
+//| بستن فقط سودده‌ها                                               |
 //+------------------------------------------------------------------+
 void CloseProfitableGrid()
   {
    int closed = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   for(int i = PositionsTotal()-1; i >= 0; i--)
      {
-      ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == MagicNumber && 
-        OrderGetString(ORDER_SYMBOL) == _Symbol)
-        {
-         double profit = PositionGetDouble(POSITION_PROFIT);
-         if(profit > 0)
-           {
-            if(GridTrade.PositionClose(ticket))
-               closed++;
-            else
-               Print("خطا در بستن پوزیشن سودده ", ticket);
-           }
-        }
+      ulong t = PositionGetTicket(i);
+      if(PositionSelectByTicket(t) &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+         PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         PositionGetDouble(POSITION_PROFIT) > 0)
+         if(GridTrade.PositionClose(t)) closed++;
      }
-   // (اختیاری) حذف سفارشات معلق – معمولاً بهتر است باقی بمانند
-   // اما اگر می‌خواهید همه‌چیز پاک شود، می‌توانید این بخش را فعال کنید:
-   // DeleteAllPendingOrders();
-
-   Print(closed, " پوزیشن سودده بسته شد. مابقی پوزیشن‌ها و سفارشات باقی ماندند.");
+   PrintFormat("%d پوزیشن سودده بسته شد.", closed);
   }
 
-//+------------------------------------------------------------------+
-//| بستن تمام پوزیشن‌ها و حذف سفارشات معلق (کامل)                   |
 //+------------------------------------------------------------------+
 void CloseAllGrid()
   {
-   CloseAll();                     // همان تابع موجود که همه را می‌بندد
-   isTradingActive = false;        // شبکه غیرفعال می‌شود
+   CloseAll();
+   isTradingActive = false;
    tradingDone     = true;
-   Print("تمامی پوزیشن‌ها و سفارشات بسته شدند. برای شروع مجدد دکمه «شروع شبکه» را بزنید.");
+   Print("شبکه متوقف شد. برای شروع مجدد دکمه «شروع شبکه» را بزنید.");
   }
 
+void DeleteAllOrdersAndPositions()
+  {
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+     {
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol)
+         GridTrade.OrderDelete(t);
+     }
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(PositionSelectByTicket(t) &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+         PositionGetString(POSITION_SYMBOL) == _Symbol)
+         GridTrade.PositionClose(t);
+     }
+  }
 
 //+------------------------------------------------------------------+
-//| یافتن بالاترین قیمت Buy Stop (در صورت نبود، Ask + یک گام)        |
+//| یافتن بالاترین Buy Stop                                         |
 //+------------------------------------------------------------------+
 double FindHighestBuyStopPrice()
   {
-   double maxPrice = 0;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   double maxP = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
      {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
-          OrderGetString(ORDER_SYMBOL) == _Symbol &&
-         OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_BUY_STOP)
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_BUY_STOP)
         {
-         double price = OrderGetDouble(ORDER_PRICE_OPEN);
-         if(price > maxPrice) maxPrice = price;
+         double p = OrderGetDouble(ORDER_PRICE_OPEN);
+         if(p > maxP) maxP = p;
         }
      }
-   if(maxPrice == 0)
-      maxPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + GridPipStep * g_PipSize * _Point;
-   return maxPrice;
+   if(maxP == 0)
+      maxP = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + GridStep_Points * _Point;
+   return maxP;
   }
 
 //+------------------------------------------------------------------+
-//| یافتن پایین‌ترین قیمت Sell Stop (در صورت نبود، Bid - یک گام)     |
+//| یافتن پایین‌ترین Sell Stop                                      |
 //+------------------------------------------------------------------+
 double FindLowestSellStopPrice()
   {
-   double minPrice = DBL_MAX;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   double minP = DBL_MAX;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
      {
-      ulong ticket = OrderGetTicket(i);
-      if(OrderSelect(ticket) && OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
-          OrderGetString(ORDER_SYMBOL) == _Symbol &&
-         OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_SELL_STOP)
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_SELL_STOP)
         {
-         double price = OrderGetDouble(ORDER_PRICE_OPEN);
-         if(price < minPrice) minPrice = price;
+         double p = OrderGetDouble(ORDER_PRICE_OPEN);
+         if(p < minP) minP = p;
         }
      }
-   if(minPrice == DBL_MAX)
-      minPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID) - GridPipStep * g_PipSize * _Point;
-   return minPrice;
+   if(minP == DBL_MAX)
+      minP = SymbolInfoDouble(_Symbol, SYMBOL_BID) - GridStep_Points * _Point;
+   return minP;
   }
 
+//+------------------------------------------------------------------+
+//| داشبورد اطلاعات                                                  |
+//+------------------------------------------------------------------+
+void ShowDashboard()
+  {
+   double totalProfit = 0;
+   int    posCount = 0, ordCount = 0, buyPos = 0, sellPos = 0;
+
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(PositionSelectByTicket(t) &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+         PositionGetString(POSITION_SYMBOL) == _Symbol)
+        {
+         totalProfit += PositionGetDouble(POSITION_PROFIT);
+         posCount++;
+         if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) buyPos++;
+         else sellPos++;
+        }
+     }
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+     {
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol)
+         ordCount++;
+     }
+
+   // محاسبه فاصله‌های واقعی بر حسب قیمت
+   double stepPrice = GridStep_Points * _Point;
+   double slPrice   = SL_Points * _Point;
+   double tpPrice   = TP_Points * _Point;
+
+   string status = isTradingActive ? "فعال ✅" : "متوقف ⛔";
+   string info   = StringFormat(
+      "══ GridHedge v4.00 | %s ══\n"
+      "_Point      : %.8f\n"
+      "GridStep    : %.5f  (%.0f pt)\n"
+      "SL فاصله   : %.5f  (%.0f pt)\n"
+      "TP فاصله   : %.5f  (%.0f pt)\n"
+      "Lot فعلی   : %.2f\n"
+      "─────────────────────────\n"
+      "سود/زیان   : %.2f $\n"
+      "پوزیشن‌ها  : %d  (B:%d | S:%d)\n"
+      "سفارشات    : %d\n"
+      "گسترش Buy  : %d / %d\n"
+      "گسترش Sell : %d / %d\n"
+      "هدف سود    : %.2f$ | ضرر: %.2f$",
+      status,
+      _Point,
+      stepPrice, GridStep_Points,
+      slPrice,   SL_Points,
+      tpPrice,   TP_Points,
+      g_CurrentLot,
+      totalProfit,
+      posCount, buyPos, sellPos,
+      ordCount,
+      buyExpansionCount,  g_MaxBuyExpansions,
+      sellExpansionCount, g_MaxSellExpansions,
+      TotalProfitTarget, TotalStopLoss
+   );
+  
+   
+   if(ObjectFind(0, DASHBOARD_LABEL) < 0)
+     {
+      ObjectCreate(0, DASHBOARD_LABEL, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, DASHBOARD_LABEL, OBJPROP_CORNER, CORNER_LEFT_LOWER);
+      ObjectSetInteger(0, DASHBOARD_LABEL, OBJPROP_XDISTANCE, 10);   // فاصله از لبه چپ
+      ObjectSetInteger(0, DASHBOARD_LABEL, OBJPROP_YDISTANCE, 10);   // فاصله از لبه پایین
+      ObjectSetInteger(0, DASHBOARD_LABEL, OBJPROP_COLOR, clrYellow);
+      ObjectSetInteger(0, DASHBOARD_LABEL, OBJPROP_FONTSIZE, 10);
+      ObjectSetInteger(0, DASHBOARD_LABEL, OBJPROP_SELECTABLE, false);
+     }
+
+   ObjectSetString(0, DASHBOARD_LABEL, OBJPROP_TEXT, info);
+
+  }
 
 //+------------------------------------------------------------------+
-//| ایجاد دکمه گرافیکی روی نمودار                                    |
+//| دکمه شروع                                                        |
 //+------------------------------------------------------------------+
 void CreateStartButton()
   {
-   string name = "BtnStartGrid";
-   if(ObjectFind(0, name) >= 0)
-      ObjectDelete(0, name);
-
-   ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, 100);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, 220);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, 60);
-   ObjectSetString(0, name, OBJPROP_TEXT, "شروع شبکه");
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clrSeaGreen);
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clrBlack);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 13);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_ZORDER, 0);
+   string n = "BtnStartGrid";
+   if(ObjectFind(0, n) >= 0) ObjectDelete(0, n);
+   ObjectCreate(0, n, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, n, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, n, OBJPROP_XDISTANCE,    10);
+   ObjectSetInteger(0, n, OBJPROP_YDISTANCE,    100);
+   ObjectSetInteger(0, n, OBJPROP_XSIZE,        220);
+   ObjectSetInteger(0, n, OBJPROP_YSIZE,        60);
+   ObjectSetString (0, n, OBJPROP_TEXT,         "شروع شبکه");
+   ObjectSetInteger(0, n, OBJPROP_COLOR,        clrWhite);
+   ObjectSetInteger(0, n, OBJPROP_BGCOLOR,      clrSeaGreen);
+   ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, clrBlack);
+   ObjectSetInteger(0, n, OBJPROP_FONTSIZE,     13);
+   ObjectSetInteger(0, n, OBJPROP_SELECTABLE,   false);
   }
 
-  //+------------------------------------------------------------------+
-//| ایجاد دکمه‌های بستن سریع روی نمودار                              |
+//+------------------------------------------------------------------+
+//| دکمه‌های بستن                                                   |
 //+------------------------------------------------------------------+
 void CreateCloseButtons()
   {
-   string name1 = "BtnCloseProfitable";
-   if(ObjectFind(0, name1) < 0)
+   string n1 = "BtnCloseProfitable";
+   if(ObjectFind(0, n1) < 0)
      {
-      ObjectCreate(0, name1, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, name1, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, name1, OBJPROP_XDISTANCE, 240); // کنار دکمه شروع
-      ObjectSetInteger(0, name1, OBJPROP_YDISTANCE, 100);
-      ObjectSetInteger(0, name1, OBJPROP_XSIZE, 220);
-      ObjectSetInteger(0, name1, OBJPROP_YSIZE, 60);
-      ObjectSetString(0, name1, OBJPROP_TEXT, "بستن سودده");
-      ObjectSetInteger(0, name1, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, name1, OBJPROP_BGCOLOR, clrOrangeRed);
-      ObjectSetInteger(0, name1, OBJPROP_BORDER_COLOR, clrBlack);
-      ObjectSetInteger(0, name1, OBJPROP_FONTSIZE, 13);
-      ObjectSetInteger(0, name1, OBJPROP_SELECTABLE, false);
+      ObjectCreate(0, n1, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, n1, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, n1, OBJPROP_XDISTANCE,    240);
+      ObjectSetInteger(0, n1, OBJPROP_YDISTANCE,    100);
+      ObjectSetInteger(0, n1, OBJPROP_XSIZE,        220);
+      ObjectSetInteger(0, n1, OBJPROP_YSIZE,        60);
+      ObjectSetString (0, n1, OBJPROP_TEXT,         "بستن سودده");
+      ObjectSetInteger(0, n1, OBJPROP_COLOR,        clrWhite);
+      ObjectSetInteger(0, n1, OBJPROP_BGCOLOR,      clrOrangeRed);
+      ObjectSetInteger(0, n1, OBJPROP_BORDER_COLOR, clrBlack);
+      ObjectSetInteger(0, n1, OBJPROP_FONTSIZE,     13);
+      ObjectSetInteger(0, n1, OBJPROP_SELECTABLE,   false);
      }
 
-   string name2 = "BtnCloseAllGrid";
-   if(ObjectFind(0, name2) < 0)
+   string n2 = "BtnCloseAllGrid";
+   if(ObjectFind(0, n2) < 0)
      {
-      ObjectCreate(0, name2, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, name2, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, name2, OBJPROP_XDISTANCE, 470); // باز هم جلوتر
-      ObjectSetInteger(0, name2, OBJPROP_YDISTANCE, 100);
-      ObjectSetInteger(0, name2, OBJPROP_XSIZE, 220);
-      ObjectSetInteger(0, name2, OBJPROP_YSIZE, 60);
-      ObjectSetString(0, name2, OBJPROP_TEXT, "بستن همه");
-      ObjectSetInteger(0, name2, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, name2, OBJPROP_BGCOLOR, clrFireBrick);
-      ObjectSetInteger(0, name2, OBJPROP_BORDER_COLOR, clrBlack);
-      ObjectSetInteger(0, name2, OBJPROP_FONTSIZE, 13);
-      ObjectSetInteger(0, name2, OBJPROP_SELECTABLE, false);
+      ObjectCreate(0, n2, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, n2, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, n2, OBJPROP_XDISTANCE,    470);
+      ObjectSetInteger(0, n2, OBJPROP_YDISTANCE,    100);
+      ObjectSetInteger(0, n2, OBJPROP_XSIZE,        220);
+      ObjectSetInteger(0, n2, OBJPROP_YSIZE,        60);
+      ObjectSetString (0, n2, OBJPROP_TEXT,         "بستن همه");
+      ObjectSetInteger(0, n2, OBJPROP_COLOR,        clrWhite);
+      ObjectSetInteger(0, n2, OBJPROP_BGCOLOR,      clrFireBrick);
+      ObjectSetInteger(0, n2, OBJPROP_BORDER_COLOR, clrBlack);
+      ObjectSetInteger(0, n2, OBJPROP_FONTSIZE,     13);
+      ObjectSetInteger(0, n2, OBJPROP_SELECTABLE,   false);
      }
   }
 
+//+------------------------------------------------------------------+
+//| دکمه‌های گسترش                                                  |
+//+------------------------------------------------------------------+
 void CreateExpansionButtons()
   {
-   // برچسب و دکمه‌های خرید
    ObjectCreate(0, "LblBuyExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "LblBuyExp", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "LblBuyExp", OBJPROP_CORNER,    CORNER_LEFT_UPPER);
    ObjectSetInteger(0, "LblBuyExp", OBJPROP_XDISTANCE, 10);
    ObjectSetInteger(0, "LblBuyExp", OBJPROP_YDISTANCE, 180);
-   ObjectSetString(0, "LblBuyExp", OBJPROP_TEXT, "توسعه خرید:");
-   ObjectSetInteger(0, "LblBuyExp", OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, "LblBuyExp", OBJPROP_FONTSIZE, 10);
+   ObjectSetString (0, "LblBuyExp", OBJPROP_TEXT,      "توسعه خرید:");
+   ObjectSetInteger(0, "LblBuyExp", OBJPROP_COLOR,     clrWhite);
+   ObjectSetInteger(0, "LblBuyExp", OBJPROP_FONTSIZE,  10);
 
-   // دکمه منفی خرید
-   CreateButton("BtnBuyExpMinus", "-", 190, 180, 50, 50, clrWhite, clrRed, 14);
-   // نمایش مقدار فعلی
+   CreateButton("BtnBuyExpMinus", "-", 190, 180, 50, 50, clrWhite, clrRed,   14);
+
    ObjectCreate(0, "ValBuyExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "ValBuyExp", OBJPROP_CORNER,    CORNER_LEFT_UPPER);
    ObjectSetInteger(0, "ValBuyExp", OBJPROP_XDISTANCE, 250);
    ObjectSetInteger(0, "ValBuyExp", OBJPROP_YDISTANCE, 180);
-   ObjectSetString(0, "ValBuyExp", OBJPROP_TEXT, IntegerToString(g_MaxBuyExpansions));
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_COLOR, clrYellow);
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_FONTSIZE, 14);
-   // دکمه مثبت خرید
-   CreateButton("BtnBuyExpPlus", "+", 285, 180, 50, 50, clrWhite, clrGreen, 14);
+   ObjectSetString (0, "ValBuyExp", OBJPROP_TEXT,      IntegerToString(g_MaxBuyExpansions));
+   ObjectSetInteger(0, "ValBuyExp", OBJPROP_COLOR,     clrYellow);
+   ObjectSetInteger(0, "ValBuyExp", OBJPROP_FONTSIZE,  14);
 
-   // برچسب و دکمه‌های فروش (با فاصله بیشتر به سمت راست)
+   CreateButton("BtnBuyExpPlus",  "+", 285, 180, 50, 50, clrWhite, clrGreen, 14);
+
    ObjectCreate(0, "LblSellExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "LblSellExp", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "LblSellExp", OBJPROP_CORNER,    CORNER_LEFT_UPPER);
    ObjectSetInteger(0, "LblSellExp", OBJPROP_XDISTANCE, 10);
    ObjectSetInteger(0, "LblSellExp", OBJPROP_YDISTANCE, 250);
-   ObjectSetString(0, "LblSellExp", OBJPROP_TEXT, "توسعه فروش:");
-   ObjectSetInteger(0, "LblSellExp", OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, "LblSellExp", OBJPROP_FONTSIZE, 10);
+   ObjectSetString (0, "LblSellExp", OBJPROP_TEXT,      "توسعه فروش:");
+   ObjectSetInteger(0, "LblSellExp", OBJPROP_COLOR,     clrWhite);
+   ObjectSetInteger(0, "LblSellExp", OBJPROP_FONTSIZE,  10);
 
-   CreateButton("BtnSellExpMinus", "-", 190, 240, 50, 50, clrWhite, clrRed, 14);
+   CreateButton("BtnSellExpMinus", "-", 190, 240, 50, 50, clrWhite, clrRed,   14);
+
    ObjectCreate(0, "ValSellExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "ValSellExp", OBJPROP_CORNER,    CORNER_LEFT_UPPER);
    ObjectSetInteger(0, "ValSellExp", OBJPROP_XDISTANCE, 250);
    ObjectSetInteger(0, "ValSellExp", OBJPROP_YDISTANCE, 240);
-   ObjectSetString(0, "ValSellExp", OBJPROP_TEXT, IntegerToString(g_MaxSellExpansions));
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_COLOR, clrYellow);
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_FONTSIZE, 14);
-   CreateButton("BtnSellExpPlus", "+", 285, 240, 50, 50, clrWhite, clrGreen, 14);
+   ObjectSetString (0, "ValSellExp", OBJPROP_TEXT,      IntegerToString(g_MaxSellExpansions));
+   ObjectSetInteger(0, "ValSellExp", OBJPROP_COLOR,     clrYellow);
+   ObjectSetInteger(0, "ValSellExp", OBJPROP_FONTSIZE,  14);
+
+   CreateButton("BtnSellExpPlus",  "+", 285, 240, 50, 50, clrWhite, clrGreen, 14);
   }
 
-// تابع کمکی برای ساخت دکمه با پارامترها
-void CreateButton(string name, string text, int x, int y, int width, int height, color clrText, color clrBg, int fontSize)
+//+------------------------------------------------------------------+
+void CreateButton(string name, string text, int x, int y,
+                  int w, int h, color ct, color cb, int fs)
   {
    if(ObjectFind(0, name) >= 0) ObjectDelete(0, name);
    ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
-   ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clrText);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clrBg);
+   ObjectSetInteger(0, name, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE,    x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE,    y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE,        w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE,        h);
+   ObjectSetString (0, name, OBJPROP_TEXT,         text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR,        ct);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR,      cb);
    ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clrBlack);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE,     fs);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE,   false);
   }
+//+------------------------------------------------------------------+
