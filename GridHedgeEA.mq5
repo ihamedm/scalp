@@ -334,12 +334,7 @@ void ExecuteStrategy()
    else
      {
       direction = DetectTrendFromEMA();
-      if(direction == -1)
-        {
-         Print("⚠️ بازار رنج است. شبکه اجرا نشد.");
-         isTradingActive = false;
-         return;
-        }
+    
       Print("جهت EMA(", TrendMAPeriod, "): ", direction == ORDER_TYPE_BUY ? "خرید ▲" : "فروش ▼");
      }
 
@@ -364,8 +359,8 @@ void ExecuteStrategy()
 
    PlaceGrid();
 
-   lastBuyExpansionPrice  = FindHighestBuyStopPrice();
-   lastSellExpansionPrice = FindLowestSellStopPrice();
+   lastBuyExpansionPrice  = ask;
+   lastSellExpansionPrice = bid;
    buyExpansionCount      = 0;
    sellExpansionCount     = 0;
   }
@@ -400,11 +395,17 @@ int DetectTrendFromEMA()
    bool slopeUp   = ema[0] > ema[confirm];
    bool slopeDown = ema[0] < ema[confirm];
 
+   // اگر شرایط قوی برقرار بود، همان جهت را برگردان
    if(bullish && slopeUp)   return ORDER_TYPE_BUY;
    if(bearish && slopeDown) return ORDER_TYPE_SELL;
-   return -1;
-  }
 
+   // در غیر این‌صورت (رنج)، با یک قانون ساده تصمیم بگیر:
+   if(cls[0] > ema[0])      return ORDER_TYPE_BUY;
+   if(cls[0] < ema[0])      return ORDER_TYPE_SELL;
+
+   // اگر برابر بود، جهت پیش‌فرض خرید (می‌توانید تغییر دهید)
+   return ORDER_TYPE_BUY;
+  }
 //+------------------------------------------------------------------+
 //| Trailing Stop - بر حسب Point                                    |
 //+------------------------------------------------------------------+
@@ -605,76 +606,15 @@ void CheckGridExpansion()
   }
 
 //+------------------------------------------------------------------+
+//| گسترش خرید: پر کردن نزدیک‌ترین شکاف بالای Ask                   |
+//+------------------------------------------------------------------+
 void BuyAdjustment()
   {
-   double maxPrice = FindHighestBuyStopPrice();
-   double step     = GridStep_Points * _Point;
-   double newPrice = maxPrice + step;
+   double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double step = GridStep_Points * _Point;
 
-   for(int i = 0; i < 2; i++)
-     {
-      double lot = CalcLot(SL_Points);
-      double sl  = (SL_Points > 0) ? PointToPrice(newPrice, SL_Points, true,  true) : 0;
-      double tp  = (TP_Points > 0) ? PointToPrice(newPrice, TP_Points, false, true) : 0;
-      if(PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, newPrice, sl, tp, "Buy_Dyn"))
-         newPrice += step;
-      else break;
-     }
-   DeleteClosestSellStops(2);
-  }
-
-//+------------------------------------------------------------------+
-void SellAdjustment()
-  {
-   double minPrice = FindLowestSellStopPrice();
-   double step     = GridStep_Points * _Point;
-   double newPrice = minPrice - step;
-
-   for(int i = 0; i < 2; i++)
-     {
-      double lot = CalcLot(SL_Points);
-      double sl  = (SL_Points > 0) ? PointToPrice(newPrice, SL_Points, true,  false) : 0;
-      double tp  = (TP_Points > 0) ? PointToPrice(newPrice, TP_Points, false, false) : 0;
-      if(PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, newPrice, sl, tp, "Sell_Dyn"))
-         newPrice -= step;
-      else break;
-     }
-   DeleteClosestBuyStops(2);
-  }
-
-//+------------------------------------------------------------------+
-void DeleteClosestSellStops(int count)
-  {
-   ulong tickets[]; double prices[];
-   for(int i = OrdersTotal()-1; i >= 0; i--)
-     {
-      ulong t = OrderGetTicket(i);
-      if(OrderSelect(t) &&
-         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
-         OrderGetString(ORDER_SYMBOL) == _Symbol &&
-         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_SELL_STOP)
-        {
-         int s = ArraySize(tickets);
-         ArrayResize(tickets, s+1); ArrayResize(prices, s+1);
-         tickets[s] = t; prices[s] = OrderGetDouble(ORDER_PRICE_OPEN);
-        }
-     }
-   // نزولی مرتب کن (بزرگترین = نزدیک‌ترین)
-   for(int i=ArraySize(prices)-1; i>0; i--)
-      for(int j=0; j<i; j++)
-         if(prices[j] < prices[j+1])
-           {
-            double td=prices[j];  prices[j]=prices[j+1];  prices[j+1]=td;
-            ulong  tu=tickets[j]; tickets[j]=tickets[j+1]; tickets[j+1]=tu;
-           }
-   for(int i=0; i<count && i<ArraySize(tickets); i++)
-      GridTrade.OrderDelete(tickets[i]);
-  }
-
-//+------------------------------------------------------------------+
-void DeleteClosestBuyStops(int count)
-  {
-   ulong tickets[]; double prices[];
+   // پیدا کردن نزدیک‌ترین Buy Stop موجود بالای Ask
+   double nearestBuy = DBL_MAX;
    for(int i = OrdersTotal()-1; i >= 0; i--)
      {
       ulong t = OrderGetTicket(i);
@@ -683,23 +623,124 @@ void DeleteClosestBuyStops(int count)
          OrderGetString(ORDER_SYMBOL) == _Symbol &&
          OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_BUY_STOP)
         {
-         int s = ArraySize(tickets);
-         ArrayResize(tickets, s+1); ArrayResize(prices, s+1);
-         tickets[s] = t; prices[s] = OrderGetDouble(ORDER_PRICE_OPEN);
+         double p = OrderGetDouble(ORDER_PRICE_OPEN);
+         if(p > ask && p < nearestBuy) nearestBuy = p;
         }
      }
-   // صعودی مرتب کن (کوچکترین = نزدیک‌ترین)
-   for(int i=ArraySize(prices)-1; i>0; i--)
-      for(int j=0; j<i; j++)
-         if(prices[j] > prices[j+1])
-           {
-            double td=prices[j];  prices[j]=prices[j+1];  prices[j+1]=td;
-            ulong  tu=tickets[j]; tickets[j]=tickets[j+1]; tickets[j+1]=tu;
-           }
-   for(int i=0; i<count && i<ArraySize(tickets); i++)
-      GridTrade.OrderDelete(tickets[i]);
+
+   // تعیین قیمت ورود سفارش جدید
+   double entry = (nearestBuy < DBL_MAX) ? nearestBuy + step : ask + step;
+
+   // رعایت حداقل فاصله بروکر
+   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist = (stopsLevel + 1) * _Point;
+   if(entry - ask < minDist) entry = ask + minDist;
+
+   double lot = CalcLot(SL_Points);
+   double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  true) : 0;
+   double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, true) : 0;
+   PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, entry, sl, tp, "Buy_Dyn");
+
+   // حذف دورترین سفارش فروش (پایین‌ترین قیمت)
+   DeleteFarthestSellStop();
   }
 
+//+------------------------------------------------------------------+
+//| گسترش فروش: پر کردن نزدیک‌ترین شکاف پایین Bid                  |
+//+------------------------------------------------------------------+
+void SellAdjustment()
+  {
+   double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double step = GridStep_Points * _Point;
+
+   // پیدا کردن نزدیک‌ترین Sell Stop موجود پایین Bid
+   double nearestSell = -1;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+     {
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_SELL_STOP)
+        {
+         double p = OrderGetDouble(ORDER_PRICE_OPEN);
+         if(p < bid && p > nearestSell) nearestSell = p;
+        }
+     }
+
+   // تعیین قیمت ورود سفارش جدید
+   double entry = (nearestSell > 0) ? nearestSell - step : bid - step;
+
+   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist = (stopsLevel + 1) * _Point;
+   if(bid - entry < minDist) entry = bid - minDist;
+
+   double lot = CalcLot(SL_Points);
+   double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  false) : 0;
+   double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, false) : 0;
+   PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, entry, sl, tp, "Sell_Dyn");
+
+   // حذف دورترین سفارش خرید (بالاترین قیمت)
+   DeleteFarthestBuyStop();
+  }
+
+//+------------------------------------------------------------------+
+//| حذف دورترین سفارش فروش (پایین‌ترین قیمت)                        |
+//+------------------------------------------------------------------+
+void DeleteFarthestSellStop()
+  {
+   ulong  farthestTicket = 0;
+   double farthestPrice  = DBL_MAX;
+
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+     {
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_SELL_STOP)
+        {
+         double p = OrderGetDouble(ORDER_PRICE_OPEN);
+         if(p < farthestPrice)
+           {
+            farthestPrice  = p;
+            farthestTicket = t;
+           }
+        }
+     }
+
+   if(farthestTicket != 0)
+      GridTrade.OrderDelete(farthestTicket);
+  }
+
+//+------------------------------------------------------------------+
+//| حذف دورترین سفارش خرید (بالاترین قیمت)                          |
+//+------------------------------------------------------------------+
+void DeleteFarthestBuyStop()
+  {
+   ulong  farthestTicket = 0;
+   double farthestPrice  = 0;
+
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+     {
+      ulong t = OrderGetTicket(i);
+      if(OrderSelect(t) &&
+         OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         OrderGetInteger(ORDER_TYPE)  == ORDER_TYPE_BUY_STOP)
+        {
+         double p = OrderGetDouble(ORDER_PRICE_OPEN);
+         if(p > farthestPrice)
+           {
+            farthestPrice  = p;
+            farthestTicket = t;
+           }
+        }
+     }
+
+   if(farthestTicket != 0)
+      GridTrade.OrderDelete(farthestTicket);
+  }
 //+------------------------------------------------------------------+
 //| بررسی سود/زیان کل                                               |
 //+------------------------------------------------------------------+
