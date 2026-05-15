@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "5.00"
+#property version   "5.1"
 
 #include <Trade\Trade.mqh>
 
@@ -12,11 +12,8 @@
 //------------------------- INPUT PARAMETERS -------------------------
 input group "=== تنظیمات کلی ==="
 input int    MagicNumber       = 202701;   // شماره جادویی
-input double TotalProfitTarget = 10.0;     // هدف سود کل (دلار)
-input double TotalStopLoss     = -50.0;    // حد ضرر کل (عدد منفی، دلار)
+input int    TesterStartHour      = 1;        // ساعت شروع شبکه در تستر (0-23)
 
-input group "=== تنظیمات تست (فقط در Strategy Tester) ==="
-input int      TesterStartHour      = 1;        // ساعت شروع شبکه در تستر (0-23)
 
 input group "=== تشخیص روند ==="
 input bool             UseManualDirection  = false;
@@ -26,21 +23,21 @@ input int              TrendMAShift        = 0;
 input ENUM_MA_METHOD   TrendMAMethod       = MODE_EMA;
 input int              TrendConfirmCandles = 3;
 
-input group "=== شبکه سفارشات (بر حسب Point) ==="
-input int    GridLevels        = 5;         // تعداد پله های اولیه
-input double GridStep_Points   = 500.0;     // فاصله پله ها(پوینت)
 
-input group "=== حد سود و ضرر (Point) ==="
-input double SL_Points         = 0;        // حد ضرر (Point)
-input double TP_Points         = 200.0;    // حد سود (Point)
+input group "=== معاملات ==="
+input double FixedLot          = 0.01;     // حجم ثابت هر پله لات
+input double SL_Points         = 0;        // حد ضرر هر پله (Point)
+input double TP_Points         = 100.0;    // حد سود هر پله (Point)
+input int    GridLevels        = 4;         // تعداد پله های اولیه
+input double GridStep_Points   = 100.0;     // فاصله پله ها (Point)
+input double TotalProfitTarget = 40.0;     // هدف سود کل (دلار)
+input double TotalStopLoss     = -100.0;    // حد ضرر کل (عدد منفی، دلار)
 
-input group "=== حجم معاملات ==="
-input double FixedLot          = 0.01;     // حجم ثابت لات
 
 input group "=== گسترش شبکه ==="
 input int    InitialMaxBuyExpansions  = 4;
 input int    InitialMaxSellExpansions = 4;
-input int    ExpansionMethod       = 0;        //متد گسترش : 0 = فعال‌شدن سفارش | 1 = تغییر قیمت
+input int    ExpansionMethod       = 1;        //متد گسترش : 0 = فعال‌شدن سفارش | 1 = تغییر قیمت
 
 //------------------------- GLOBAL VARIABLES -------------------------
 CTrade GridTrade;
@@ -923,16 +920,16 @@ void CreateStartButton()
    string n = "BtnStartGrid";
    if(ObjectFind(0, n) >= 0) ObjectDelete(0, n);
    ObjectCreate(0, n, OBJ_BUTTON, 0, 0, 0);
-   ObjectSetInteger(0, n, OBJPROP_CORNER,       CORNER_LEFT_LOWER);
-   ObjectSetInteger(0, n, OBJPROP_XDISTANCE,    5);
-   ObjectSetInteger(0, n, OBJPROP_YDISTANCE,    80);
-   ObjectSetInteger(0, n, OBJPROP_XSIZE,        100);
-   ObjectSetInteger(0, n, OBJPROP_YSIZE,        30);
+   ObjectSetInteger(0, n, OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, n, OBJPROP_XDISTANCE,    258);
+   ObjectSetInteger(0, n, OBJPROP_YDISTANCE,    8);
+   ObjectSetInteger(0, n, OBJPROP_XSIZE,        74);
+   ObjectSetInteger(0, n, OBJPROP_YSIZE,        24);
    ObjectSetString (0, n, OBJPROP_TEXT,         "شروع شبکه");
    ObjectSetInteger(0, n, OBJPROP_COLOR,        clrWhite);
    ObjectSetInteger(0, n, OBJPROP_BGCOLOR,      clrSeaGreen);
    ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, clrBlack);
-   ObjectSetInteger(0, n, OBJPROP_FONTSIZE,     10);
+   ObjectSetInteger(0, n, OBJPROP_FONTSIZE,     8);
    ObjectSetInteger(0, n, OBJPROP_SELECTABLE,   false);
   }
 
@@ -945,16 +942,16 @@ void CreateCloseButtons()
    if(ObjectFind(0, n1) < 0)
      {
       ObjectCreate(0, n1, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, n1, OBJPROP_CORNER,       CORNER_LEFT_LOWER);
-      ObjectSetInteger(0, n1, OBJPROP_XDISTANCE,    110);
-      ObjectSetInteger(0, n1, OBJPROP_YDISTANCE,    80);
-      ObjectSetInteger(0, n1, OBJPROP_XSIZE,        90);
-      ObjectSetInteger(0, n1, OBJPROP_YSIZE,        30);
+      ObjectSetInteger(0, n1, OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, n1, OBJPROP_XDISTANCE,    176);
+      ObjectSetInteger(0, n1, OBJPROP_YDISTANCE,    8);
+      ObjectSetInteger(0, n1, OBJPROP_XSIZE,        76);
+      ObjectSetInteger(0, n1, OBJPROP_YSIZE,        24);
       ObjectSetString (0, n1, OBJPROP_TEXT,         "بستن سودده");
       ObjectSetInteger(0, n1, OBJPROP_COLOR,        clrWhite);
       ObjectSetInteger(0, n1, OBJPROP_BGCOLOR,      clrOrangeRed);
       ObjectSetInteger(0, n1, OBJPROP_BORDER_COLOR, clrBlack);
-      ObjectSetInteger(0, n1, OBJPROP_FONTSIZE,     9);
+      ObjectSetInteger(0, n1, OBJPROP_FONTSIZE,     8);
       ObjectSetInteger(0, n1, OBJPROP_SELECTABLE,   false);
      }
 
@@ -962,16 +959,16 @@ void CreateCloseButtons()
    if(ObjectFind(0, n2) < 0)
      {
       ObjectCreate(0, n2, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, n2, OBJPROP_CORNER,       CORNER_LEFT_LOWER);
-      ObjectSetInteger(0, n2, OBJPROP_XDISTANCE,    205);
-      ObjectSetInteger(0, n2, OBJPROP_YDISTANCE,    80);
-      ObjectSetInteger(0, n2, OBJPROP_XSIZE,        90);
-      ObjectSetInteger(0, n2, OBJPROP_YSIZE,        30);
+      ObjectSetInteger(0, n2, OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, n2, OBJPROP_XDISTANCE,    102);
+      ObjectSetInteger(0, n2, OBJPROP_YDISTANCE,    8);
+      ObjectSetInteger(0, n2, OBJPROP_XSIZE,        68);
+      ObjectSetInteger(0, n2, OBJPROP_YSIZE,        24);
       ObjectSetString (0, n2, OBJPROP_TEXT,         "بستن همه");
       ObjectSetInteger(0, n2, OBJPROP_COLOR,        clrWhite);
       ObjectSetInteger(0, n2, OBJPROP_BGCOLOR,      clrFireBrick);
       ObjectSetInteger(0, n2, OBJPROP_BORDER_COLOR, clrBlack);
-      ObjectSetInteger(0, n2, OBJPROP_FONTSIZE,     9);
+      ObjectSetInteger(0, n2, OBJPROP_FONTSIZE,     8);
       ObjectSetInteger(0, n2, OBJPROP_SELECTABLE,   false);
      }
 
@@ -979,16 +976,16 @@ void CreateCloseButtons()
     if(ObjectFind(0, n3) < 0)
      {
       ObjectCreate(0, n3, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, n3, OBJPROP_CORNER,       CORNER_LEFT_LOWER);
-      ObjectSetInteger(0, n3, OBJPROP_XDISTANCE,    300);  
-      ObjectSetInteger(0, n3, OBJPROP_YDISTANCE,    80);
-      ObjectSetInteger(0, n3, OBJPROP_XSIZE,        80);
-      ObjectSetInteger(0, n3, OBJPROP_YSIZE,        30);
+      ObjectSetInteger(0, n3, OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, n3, OBJPROP_XDISTANCE,    24);
+      ObjectSetInteger(0, n3, OBJPROP_YDISTANCE,    8);
+      ObjectSetInteger(0, n3, OBJPROP_XSIZE,        72);
+      ObjectSetInteger(0, n3, OBJPROP_YSIZE,        24);
       ObjectSetString (0, n3, OBJPROP_TEXT,         "پایان شبکه");
       ObjectSetInteger(0, n3, OBJPROP_COLOR,        clrWhite);
       ObjectSetInteger(0, n3, OBJPROP_BGCOLOR,      clrGray);
       ObjectSetInteger(0, n3, OBJPROP_BORDER_COLOR, clrBlack);
-      ObjectSetInteger(0, n3, OBJPROP_FONTSIZE,     9);
+      ObjectSetInteger(0, n3, OBJPROP_FONTSIZE,     8);
       ObjectSetInteger(0, n3, OBJPROP_SELECTABLE,   false);
      }
   }
@@ -1001,40 +998,40 @@ void CreateExpansionButtons()
 
     // string ValBuyExpExtended = buyExpansionCount + "/" + ValBuyExp
    ObjectCreate(0, "LblBuyExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "LblBuyExp", OBJPROP_CORNER,    CORNER_LEFT_LOWER);
-   ObjectSetInteger(0, "LblBuyExp", OBJPROP_XDISTANCE, 5);
-   ObjectSetInteger(0, "LblBuyExp", OBJPROP_YDISTANCE, 120);
+   ObjectSetInteger(0, "LblBuyExp", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, "LblBuyExp", OBJPROP_XDISTANCE, 258);
+   ObjectSetInteger(0, "LblBuyExp", OBJPROP_YDISTANCE, 40);
    ObjectSetString (0, "LblBuyExp", OBJPROP_TEXT,      "Buy:");
    ObjectSetInteger(0, "LblBuyExp", OBJPROP_COLOR,     clrWhite);
-   ObjectSetInteger(0, "LblBuyExp", OBJPROP_FONTSIZE,  9);
+   ObjectSetInteger(0, "LblBuyExp", OBJPROP_FONTSIZE,  8);
 
-   CreateButton("BtnBuyExpMinus", "-", 55, 120, 25, 25, clrWhite, clrRed, 10);
+   CreateButton("BtnBuyExpMinus", "-", 218, 36, 20, 20, clrWhite, clrRed, 8);
    ObjectCreate(0, "ValBuyExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_CORNER,    CORNER_LEFT_LOWER);
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_XDISTANCE, 85);
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_YDISTANCE, 120);
+   ObjectSetInteger(0, "ValBuyExp", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, "ValBuyExp", OBJPROP_XDISTANCE, 168);
+   ObjectSetInteger(0, "ValBuyExp", OBJPROP_YDISTANCE, 40);
    ObjectSetString (0, "ValBuyExp", OBJPROP_TEXT,      "0/" + IntegerToString(g_MaxBuyExpansions));
    ObjectSetInteger(0, "ValBuyExp", OBJPROP_COLOR,     clrYellow);
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_FONTSIZE,  10);
-   CreateButton("BtnBuyExpPlus",  "+", 135, 120, 25, 25, clrWhite, clrGreen, 10);
+   ObjectSetInteger(0, "ValBuyExp", OBJPROP_FONTSIZE,  8);
+   CreateButton("BtnBuyExpPlus",  "+", 126, 36, 20, 20, clrWhite, clrGreen, 8);
 
    ObjectCreate(0, "LblSellExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "LblSellExp", OBJPROP_CORNER,    CORNER_LEFT_LOWER);
-   ObjectSetInteger(0, "LblSellExp", OBJPROP_XDISTANCE, 5);
-   ObjectSetInteger(0, "LblSellExp", OBJPROP_YDISTANCE, 150);
+   ObjectSetInteger(0, "LblSellExp", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, "LblSellExp", OBJPROP_XDISTANCE, 258);
+   ObjectSetInteger(0, "LblSellExp", OBJPROP_YDISTANCE, 64);
    ObjectSetString (0, "LblSellExp", OBJPROP_TEXT,      "Sell:");
    ObjectSetInteger(0, "LblSellExp", OBJPROP_COLOR,     clrWhite);
-   ObjectSetInteger(0, "LblSellExp", OBJPROP_FONTSIZE,  9);
+   ObjectSetInteger(0, "LblSellExp", OBJPROP_FONTSIZE,  8);
 
-   CreateButton("BtnSellExpMinus", "-", 55, 150, 25, 25, clrWhite, clrRed, 10);
+   CreateButton("BtnSellExpMinus", "-", 218, 60, 20, 20, clrWhite, clrRed, 8);
    ObjectCreate(0, "ValSellExp", OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_CORNER,    CORNER_LEFT_LOWER);
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_XDISTANCE, 85);
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_YDISTANCE, 150);
+   ObjectSetInteger(0, "ValSellExp", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, "ValSellExp", OBJPROP_XDISTANCE, 168);
+   ObjectSetInteger(0, "ValSellExp", OBJPROP_YDISTANCE, 64);
    ObjectSetString (0, "ValSellExp", OBJPROP_TEXT,      "0/" + IntegerToString(g_MaxSellExpansions));
    ObjectSetInteger(0, "ValSellExp", OBJPROP_COLOR,     clrYellow);
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_FONTSIZE,  10);
-   CreateButton("BtnSellExpPlus",  "+", 135, 150, 25, 25, clrWhite, clrGreen, 10);
+   ObjectSetInteger(0, "ValSellExp", OBJPROP_FONTSIZE,  8);
+   CreateButton("BtnSellExpPlus",  "+", 126, 60, 20, 20, clrWhite, clrGreen, 8);
   }
 
 //+------------------------------------------------------------------+
@@ -1043,7 +1040,7 @@ void CreateButton(string name, string text, int x, int y,
   {
    if(ObjectFind(0, name) >= 0) ObjectDelete(0, name);
    ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
-   ObjectSetInteger(0, name, OBJPROP_CORNER,       CORNER_LEFT_LOWER);
+   ObjectSetInteger(0, name, OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE,    x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE,    y);
    ObjectSetInteger(0, name, OBJPROP_XSIZE,        w);
