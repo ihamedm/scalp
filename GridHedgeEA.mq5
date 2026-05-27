@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "6.0"
+#property version   "6.1"
 
 #include <Trade\Trade.mqh>
 
