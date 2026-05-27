@@ -15,6 +15,13 @@ input int    MagicNumber       = 202701;   // شماره جادویی
 input int    TesterStartHour      = 1;        // ساعت شروع شبکه در تستر (0-23)
 
 
+input group "=== تنظیمات سرور (API) ==="
+input bool   EnableServerSync   = false;     // فعال‌سازی ارسال/بازیابی اطلاعات از سرور
+input string ServerURL          = "http://127.0.0.1:8000";  // آدرس سرور (مثال: http://your-server:8000)
+input string UserToken          = "";       // توکن JWT (از داشبورد سرور دریافت کنید)
+input int    LogSyncInterval    = 60;       // فاصله زمانی برای ارسال لاگ‌ها (ثانیه)
+
+
 input group "=== تشخیص روند ==="
 input bool             UseManualDirection  = false;
 input int              DirectionChoice     = 0;
@@ -71,6 +78,10 @@ int    g_GridDirection = -1;     // جهت شبکه جاری (ORDER_TYPE_BUY / O
 double g_CurrentLot = 0.01;      // حجم فعلی لات (جایگزین FixedLot)
 double g_LotSteps[] = {0.01, 0.02, 0.03, 0.04, 0.05}; // مراحل تغییر حجم
 int    g_CurrentLotIndex = 0;    // فهرس مرحله فعلی
+
+//------------- API / Server Sync Variables ---------
+datetime g_LastLogSyncTime = 0;  // آخرین زمان ارسال لاگ
+string   g_LastStatusMessage = ""; // آخرین پیام وضعیت برای جلوگیری از تکرار
 
 struct CamarillaLevels
   {
@@ -188,18 +199,93 @@ double PointToPrice(double basePrice, double points, bool isSL, bool isBuy)
       return isSL ? basePrice + offset : basePrice - offset;
   }
 
+double NormalizePriceToTick(double price)
+  {
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize <= 0) tickSize = _Point;
+   return NormalizeDouble(MathRound(price / tickSize) * tickSize, digits);
+  }
+
+double ProtectionPriceFromEntry(double entry, double points, bool isSL, bool isBuy)
+  {
+   if(points <= 0) return 0;
+   return NormalizePriceToTick(PointToPrice(entry, points, isSL, isBuy));
+  }
+
+bool ModifyPositionProtection(ulong ticket, double sl, double tp)
+  {
+   MqlTradeRequest req = {};
+   MqlTradeResult  res = {};
+   req.action   = TRADE_ACTION_SLTP;
+   req.position = ticket;
+   req.symbol   = _Symbol;
+   req.sl       = (sl > 0) ? NormalizePriceToTick(sl) : 0;
+   req.tp       = (tp > 0) ? NormalizePriceToTick(tp) : 0;
+   req.magic    = g_ActiveMagic;
+
+   if(!OrderSend(req, res))
+     {
+      PrintFormat("❌ اصلاح TP/SL پوزیشن ناموفق: ticket=%I64u err=%d retcode=%d",
+                  ticket, GetLastError(), res.retcode);
+      return false;
+     }
+   return true;
+  }
+
+bool SelectPositionByTicketOrIdentifier(ulong positionId)
+  {
+   if(PositionSelectByTicket(positionId))
+      return true;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(ticket == positionId || (ulong)PositionGetInteger(POSITION_IDENTIFIER) == positionId)
+         return true;
+     }
+
+   return false;
+  }
+
+void SyncPositionProtectionToOpenPrice(ulong positionTicket)
+  {
+   if(!SelectPositionByTicketOrIdentifier(positionTicket)) return;
+   if(PositionGetInteger(POSITION_MAGIC) != g_ActiveMagic) return;
+   if(PositionGetString(POSITION_SYMBOL) != _Symbol) return;
+
+   ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
+   long posType = PositionGetInteger(POSITION_TYPE);
+   bool isBuy = (posType == POSITION_TYPE_BUY);
+   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   double sl = (SL_Points > 0) ? ProtectionPriceFromEntry(openPrice, SL_Points, true, isBuy)
+                               : PositionGetDouble(POSITION_SL);
+   double tp = (TP_Points > 0) ? ProtectionPriceFromEntry(openPrice, TP_Points, false, isBuy)
+                               : PositionGetDouble(POSITION_TP);
+
+   double currentSL = PositionGetDouble(POSITION_SL);
+   double currentTP = PositionGetDouble(POSITION_TP);
+   if(MathAbs(currentSL - sl) < (_Point / 2.0) && MathAbs(currentTP - tp) < (_Point / 2.0))
+      return;
+
+   if(ModifyPositionProtection(ticket, sl, tp))
+      PrintFormat("✅ TP/SL بر اساس قیمت ورود واقعی اصلاح شد | ticket=%I64u open=%.5f SL=%.5f TP=%.5f",
+                  ticket, openPrice, sl, tp);
+  }
+
 //+------------------------------------------------------------------+
 //| OnInit                                                           |
 //+------------------------------------------------------------------+
 int OnInit()
   {
    // تلاش برای بارگذاری وضعیت قبلی (مثلاً پس از تغییر تایم‌فریم)
-   if(LoadState())
+   bool stateLoaded = LoadState();
+   if(stateLoaded)
      {
       // به‌روزرسانی پارامترهایی که به‌صورت پویا باید مطابق ورودی جدید باشند
       g_ActualGridStep = GridStep_Points * _Point;
       PrintSymbolInfo();
-      UpdateLotLabel();
       Print("🔁 حالت قبلی بارگذاری شد؛ مقدارها ریست نشدند.");
      }
    else
@@ -239,8 +325,24 @@ int OnInit()
       CreateExpansionButtons();    // دکمه‌های ± خرید و فروش
       CreateLotButtons();
       CreateStartButton();         // «شروع شبکه»
-      isTradingActive = false;
-      Print("منتظر کلیک روی دکمه «شروع شبکه» باشید...");
+
+      bool gridExists = AnyGridExists();
+      if(gridExists && !tradingDone)
+        {
+         isTradingActive = true;
+         Print("🔁 شبکه فعال قبلی پیدا شد؛ موتور گسترش دوباره فعال شد.");
+        }
+      else if(!gridExists)
+        {
+         isTradingActive = false;
+        }
+
+      UpdateExpansionLabels();
+      UpdateLotLabel();
+      UpdateChartComment();
+
+      if(!isTradingActive)
+         Print("منتظر کلیک روی دکمه «شروع شبکه» باشید...");
       return INIT_SUCCEEDED;
      }
 
@@ -287,6 +389,35 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
+//| اصلاح TP/SL بعد از تبدیل سفارش معلق به پوزیشن                  |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0)
+      return;
+
+   if(!HistoryDealSelect(trans.deal))
+      return;
+
+   if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != g_ActiveMagic)
+      return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol)
+      return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_IN)
+      return;
+
+   long dealType = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+   if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL)
+      return;
+
+   ulong positionTicket = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   if(positionTicket > 0)
+      SyncPositionProtectionToOpenPrice(positionTicket);
+  }
+
+//+------------------------------------------------------------------+
 //| OnTick                                                           |
 //+------------------------------------------------------------------+
 void OnTick()
@@ -320,6 +451,23 @@ void OnTick()
 
    if(!isTradingActive || tradingDone) return;
 
+   // ارسال لاگ پوریدی وضعیت تریدینگ
+   if(TimeCurrent() - g_LastLogSyncTime >= LogSyncInterval)
+     {
+      int buyCount = CountPositionsByType(POSITION_TYPE_BUY);
+      int sellCount = CountPositionsByType(POSITION_TYPE_SELL);
+      double profit = CalculateTotalProfit();
+      
+      string statusMsg = StringFormat("Grid Active: %d Buy, %d Sell | Profit: %.2f USD | Lot: %.2f",
+                                      buyCount, sellCount, profit, g_CurrentLot);
+      if(statusMsg != g_LastStatusMessage)
+        {
+         SendLogToServer("INFO", statusMsg);
+         g_LastStatusMessage = statusMsg;
+        }
+      g_LastLogSyncTime = TimeCurrent();
+     }
+
    // گسترش شبکه بر اساس روش انتخاب‌شده
    if(ExpansionMethod == 0)
      {
@@ -331,13 +479,17 @@ void OnTick()
 
       if(currentBuy > lastBuyPosCount)
         {
-         TryBuyExpansion("فعال‌شدن سفارش خرید");
+         string msg = "فعال‌شدن سفارش خرید";
+         TryBuyExpansion(msg);
+         SendLogToServer("INFO", msg);
          lastBuyPosCount = currentBuy;
         }
 
       if(currentSell > lastSellPosCount)
         {
-         TrySellExpansion("فعال‌شدن سفارش فروش");
+         string msg = "فعال‌شدن سفارش فروش";
+         TrySellExpansion(msg);
+         SendLogToServer("INFO", msg);
          lastSellPosCount = currentSell;
         }
 
@@ -366,7 +518,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 
    if(sparam == "BtnBuyExpPlus")
      {
-      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 1, 100);
+      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 1, 1000);
       UpdateExpansionLabels();
       Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
      }
@@ -378,7 +530,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
      }
    else if(sparam == "BtnSellExpPlus")
      {
-      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 1, 100);
+      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 1, 1000);
       UpdateExpansionLabels();
       Print("MaxSellExpansions → ", g_MaxSellExpansions);
      }
@@ -397,6 +549,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          g_CurrentLot = g_LotSteps[g_CurrentLotIndex];
          UpdateLotLabel();
          SaveState();
+         UpdateParamOnServer("LotSize", g_CurrentLot);
+         SendLogToServer("INFO", "Lot Size increased to: " + DoubleToString(g_CurrentLot, 3));
          Print("حجم جدید: ", DoubleToString(g_CurrentLot, 3));
         }
       else Print("حداکثر حجم مجاز رسیده است.");
@@ -410,6 +564,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          g_CurrentLot = g_LotSteps[g_CurrentLotIndex];
          UpdateLotLabel();
          SaveState();
+         UpdateParamOnServer("LotSize", g_CurrentLot);
+         SendLogToServer("INFO", "Lot Size decreased to: " + DoubleToString(g_CurrentLot, 3));
          Print("حجم جدید: ", DoubleToString(g_CurrentLot, 3));
         }
       else Print("حداقل حجم مجاز رسیده است.");
@@ -425,12 +581,22 @@ void StartGridByButton()
    if(AnyGridExists())
      {
       Print("⚠️ شبکه در حال حاضر فعال است. ابتدا آن را ببندید.");
+      SendLogToServer("WARNING", "Grid start attempted but already active");
       return;
      }
    Print("▶ ایجاد شبکه جدید...");
+   
+   // ارسال لاگ شروع شبکه و پارامترهای اولیه
+   string gridInfo = StringFormat("Grid started | Symbol: %s | LotSize: %.3f | GridStep: %.2f | Levels: %d",
+                                  _Symbol, g_CurrentLot, GridStep_Points, GridLevels);
+   SendLogToServer("INFO", gridInfo);
+   UpdateParamOnServer("GridActive", 1.0);
+   UpdateParamOnServer("LotSize", g_CurrentLot);
+   
    isTradingActive = true;
    tradingDone     = false;
    ExecuteStrategy();
+   SaveState();
   }
 
 //+------------------------------------------------------------------+
@@ -554,11 +720,22 @@ int DetectTrendFromEMA()
 bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, string comment)
   {
    Sleep(30);
-   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double halfStep = (GridStep_Points / 2.0) * _Point;
    double price = (type == ORDER_TYPE_BUY)
                   ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) - halfStep
                   : SymbolInfoDouble(_Symbol, SYMBOL_BID) + halfStep;
+   price = NormalizePriceToTick(price);
+   bool isBuy = (type == ORDER_TYPE_BUY);
+   sl = (SL_Points > 0) ? ProtectionPriceFromEntry(price, SL_Points, true, isBuy) : 0;
+   tp = (TP_Points > 0) ? ProtectionPriceFromEntry(price, TP_Points, false, isBuy) : 0;
+
+   // proximity check using dynamic factor
+   ENUM_ORDER_TYPE checkType = (type == ORDER_TYPE_BUY) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
+   if(IsTooCloseToExisting(price, checkType))
+     {
+      PrintFormat("⛔ جلوگیری از ثبت Limit اولیه - خیلی نزدیک به سفارش/پوزیشن موجود (price=%.5f)", price);
+      return false;
+     }
 
    long   stopsLvl  = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    long   freezeLvl = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
@@ -566,13 +743,13 @@ bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, s
 
    if(type == ORDER_TYPE_BUY)
      {
-      if(sl > 0 && (price - sl) < minDist) sl = price - minDist;
-      if(tp > 0 && (tp - price) < minDist) tp = price + minDist;
+      if(sl > 0 && (price - sl) < minDist) sl = NormalizePriceToTick(price - minDist);
+      if(tp > 0 && (tp - price) < minDist) tp = NormalizePriceToTick(price + minDist);
      }
    else
      {
-      if(sl > 0 && (sl - price) < minDist) sl = price + minDist;
-      if(tp > 0 && (price - tp) < minDist) tp = price - minDist;
+      if(sl > 0 && (sl - price) < minDist) sl = NormalizePriceToTick(price + minDist);
+      if(tp > 0 && (price - tp) < minDist) tp = NormalizePriceToTick(price - minDist);
      }
 
    MqlTradeRequest req = {};
@@ -580,10 +757,10 @@ bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, s
    req.action       = TRADE_ACTION_PENDING;
    req.symbol       = _Symbol;
    req.volume       = lot;
-   req.price        = NormalizeDouble(price, digits);
+   req.price        = price;
    req.type         = (type == ORDER_TYPE_BUY) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
-   req.sl           = (sl > 0) ? NormalizeDouble(sl, digits) : 0;
-   req.tp           = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
+   req.sl           = sl;
+   req.tp           = tp;
    req.magic        = g_ActiveMagic;
    req.comment      = "[" + g_GridID + "] " + comment;
    req.type_filling = ORDER_FILLING_RETURN;
@@ -668,17 +845,27 @@ void PlaceGrid()
 bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
                        double sl, double tp, string comment){
    Sleep(30);
-   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   entry = NormalizePriceToTick(entry);
+   bool isBuy = (type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT);
+   sl = (SL_Points > 0) ? ProtectionPriceFromEntry(entry, SL_Points, true, isBuy) : 0;
+   tp = (TP_Points > 0) ? ProtectionPriceFromEntry(entry, TP_Points, false, isBuy) : 0;
+
+   // proximity check before placing pending order
+   if(IsTooCloseToExisting(entry, type))
+     {
+      PrintFormat("⛔ جلوگیری از ثبت سفارش معلق '%s' - خیلی نزدیک به سفارش/پوزیشن موجود (entry=%.5f)", comment, entry);
+      return false;
+     }
 
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
    req.action       = TRADE_ACTION_PENDING;
    req.symbol       = _Symbol;
    req.volume       = lot;
-   req.price        = NormalizeDouble(entry, digits);
+   req.price        = entry;
    req.type         = type;
-   req.sl           = (sl > 0) ? NormalizeDouble(sl, digits) : 0;
-   req.tp           = (tp > 0) ? NormalizeDouble(tp, digits) : 0;
+   req.sl           = sl;
+   req.tp           = tp;
    req.magic        = g_ActiveMagic;
    req.comment      = "[" + g_GridID + "] " + comment;
    req.type_filling = ORDER_FILLING_RETURN;
@@ -1014,6 +1201,7 @@ void CloseProfitableGrid()
          if(GridTrade.PositionClose(t)) closed++;
      }
    PrintFormat("%d پوزیشن سودده بسته شد.", closed);
+   SendLogToServer("INFO", StringFormat("Closed %d profitable positions", closed));
   }
 
 //+------------------------------------------------------------------+
@@ -1022,49 +1210,59 @@ void CloseAllGrid()
    CloseAll();
    isTradingActive = false;
    tradingDone     = true;
-  ClearState();
-  Print("شبکه متوقف شد. برای شروع مجدد دکمه «شروع شبکه» را بزنید.");
+   ClearState();
+   SendLogToServer("INFO", "Closed all grid positions");
+   UpdateParamOnServer("GridActive", 0.0);
+   Print("شبکه متوقف شد. برای شروع مجدد دکمه «شروع شبکه» را بزنید.");
   }
 
+//+------------------------------------------------------------------+
 void FinalizeGrid()
   {
    if(!AnyGridExists())
      {
       Print("هیچ شبکه‌ی فعالی برای پایان وجود ندارد.");
+      SendLogToServer("WARNING", "Finalize attempted but no active grid exists");
       return;
      }
 
-   // افزایش شمارنده شبکه و تعیین Magic جدید
+   int oldMagic = g_ActiveMagic;
    g_GridInstance++;
    g_ActiveMagic = MagicNumber + g_GridInstance;
 
-   // ریست شمارنده‌های داخلی (برای شبکه‌ی جدید)
    buyExpansionCount  = 0;
    sellExpansionCount = 0;
    lastBuyPosCount    = 0;
    lastSellPosCount   = 0;
-  ClearState();
-  PrintFormat("شبکه با Magic=%d پایان یافت. Magic جدید=%d آماده‌ی شروع.", MagicNumber + g_GridInstance - 1, g_ActiveMagic);
+   isTradingActive    = false;
+   tradingDone        = true;
+   ClearState();
+   SaveState();
+
+   SendLogToServer("INFO", StringFormat("Grid finalized manually | oldMagic=%d newMagic=%d", oldMagic, g_ActiveMagic));
+   UpdateParamOnServer("GridActive", 0.0);
+   PrintFormat("شبکه با Magic=%d پایان یافت. Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
   }
 
-void DeleteAllOrdersAndPositions()
+//+------------------------------------------------------------------+
+double CalculateTotalProfit()
   {
-   for(int i = OrdersTotal()-1; i >= 0; i--)
-     {
-      ulong t = OrderGetTicket(i);
-      if(OrderSelect(t) &&
-         OrderGetInteger(ORDER_MAGIC) == g_ActiveMagic &&
-         OrderGetString(ORDER_SYMBOL) == _Symbol)
-         GridTrade.OrderDelete(t);
-     }
+   double totalProfit = 0.0;
    for(int i = PositionsTotal()-1; i >= 0; i--)
      {
       ulong t = PositionGetTicket(i);
       if(PositionSelectByTicket(t) &&
          PositionGetInteger(POSITION_MAGIC) == g_ActiveMagic &&
          PositionGetString(POSITION_SYMBOL) == _Symbol)
-         GridTrade.PositionClose(t);
+         totalProfit += PositionGetDouble(POSITION_PROFIT);
      }
+   return totalProfit;
+  }
+
+//+------------------------------------------------------------------+
+void DeleteAllOrdersAndPositions()
+  {
+   CloseAll();
   }
 
 //+------------------------------------------------------------------+
@@ -1505,6 +1703,158 @@ void ShowCamarillaLevelsOnChart()
      }
 
    Print("📊 سطوح کاماریلا (عمودی، چندلیبل) در سمت راست چارت به‌روز شد.");
+  }
+
+//+------------------------------------------------------------------+
+//| SERVER API FUNCTIONS - ارسال/بازیابی اطلاعات از سرور             |
+//+------------------------------------------------------------------+
+
+string TrimString(string value)
+  {
+   StringTrimLeft(value);
+   StringTrimRight(value);
+   return value;
+  }
+
+string JsonEscape(string value)
+  {
+   StringReplace(value, "\\", "\\\\");
+   StringReplace(value, "\"", "\\\"");
+   StringReplace(value, "\r", "\\r");
+   StringReplace(value, "\n", "\\n");
+   return value;
+  }
+
+void StringToUtf8Body(string text, char &body[])
+  {
+   int len = StringToCharArray(text, body, 0, WHOLE_ARRAY, CP_UTF8);
+   if(len > 0)
+      ArrayResize(body, len - 1);
+  }
+
+string ResponseToString(const char &result[])
+  {
+   if(ArraySize(result) <= 0)
+      return "";
+   return CharArrayToString(result, 0, ArraySize(result), CP_UTF8);
+  }
+
+void PrintWebRequestError(string action, int status, int err, string url, string response, string headers)
+  {
+   PrintFormat("❌ %s: status=%d err=%d url=%s response=%s headers=%s",
+               action, status, err, url, response, headers);
+  }
+
+//+------------------------------------------------------------------+
+//| ارسال لاگ به سرور                                                |
+//+------------------------------------------------------------------+
+void SendLogToServer(string level, string message)
+  {
+   if(!EnableServerSync || UserToken == "") return;
+
+   string url = ServerURL + "/logs";
+   string headers = "Authorization: Bearer " + UserToken + "\r\nContent-Type: application/json\r\n";
+   
+   // ساخت JSON payload
+   string json = "{\"level\":\"" + JsonEscape(level) + "\",\"message\":\"" + JsonEscape(message) + "\"}";
+   
+   char post_data[];
+   StringToUtf8Body(json, post_data);
+   
+   char result[];
+   string result_headers;
+   
+   ResetLastError();
+   int res = WebRequest("POST", url, headers, 5000, post_data, result, result_headers);
+   int err = GetLastError();
+   string response = ResponseToString(result);
+   if(res >= 200 && res < 300)
+     {
+      PrintFormat("✅ لاگ ارسال شد: %s", message);
+     }
+   else
+     {
+      PrintWebRequestError("خطا در ارسال لاگ", res, err, url, response, result_headers);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| بازیابی پارامتر از سرور                                           |
+//+------------------------------------------------------------------+
+double FetchParamFromServer(string paramName, double defaultValue)
+  {
+   if(!EnableServerSync || UserToken == "") return defaultValue;
+   
+   string url = ServerURL + "/params";
+   string headers = "Authorization: Bearer " + UserToken + "\r\n";
+   
+   char empty_data[];
+   char result[];
+   string result_headers;
+   
+   ResetLastError();
+   int res = WebRequest("GET", url, headers, 5000, empty_data, result, result_headers);
+   int err = GetLastError();
+   string response = ResponseToString(result);
+   if(res < 200 || res >= 300)
+     {
+      PrintWebRequestError("خطا در دریافت پارامترها", res, err, url, response, result_headers);
+      return defaultValue;
+     }
+   
+   // جستجوی ساده برای parameter (می‌تواند بهتر شود با JSON parser)
+   int pos = StringFind(response, "\"" + paramName + "\"");
+   if(pos == -1) return defaultValue;
+   
+   pos = StringFind(response, "\"value\"", pos);
+   if(pos == -1) return defaultValue;
+   
+   pos = StringFind(response, ":", pos);
+   if(pos == -1) return defaultValue;
+   
+   string value_str = StringSubstr(response, pos + 1, 30);
+   value_str = TrimString(value_str);
+   if(StringLen(value_str) > 0 && StringGetCharacter(value_str, 0) == '"')
+      value_str = StringSubstr(value_str, 1);
+   int endQuote = StringFind(value_str, "\"");
+   if(endQuote >= 0)
+      value_str = StringSubstr(value_str, 0, endQuote);
+   value_str = TrimString(value_str);
+   
+   return StringToDouble(value_str);
+  }
+
+//+------------------------------------------------------------------+
+//| تغییر پارامتر روی سرور                                            |
+//+------------------------------------------------------------------+
+void UpdateParamOnServer(string paramName, double value)
+  {
+   if(!EnableServerSync || UserToken == "") return;
+   
+   string url = ServerURL + "/params/" + paramName;
+   string headers = "Authorization: Bearer " + UserToken + "\r\nContent-Type: application/json\r\n";
+   
+   // ساخت JSON payload
+   string json = "{\"name\":\"" + JsonEscape(paramName) + "\",\"value\":\"" + DoubleToString(value, 3) + "\"}";
+   
+   char put_data[];
+   StringToUtf8Body(json, put_data);
+   
+   char result[];
+   string result_headers;
+   
+   ResetLastError();
+   int res = WebRequest("PUT", url, headers, 5000, put_data, result, result_headers);
+   int err = GetLastError();
+   string response = ResponseToString(result);
+   if(res >= 200 && res < 300)
+     {
+      PrintFormat("✅ پارامتر %s به‌روز شد: %.3f", paramName, value);
+     }
+   else
+     {
+      PrintWebRequestError("خطا در بروزرسانی پارامتر", res, err, url, response, result_headers);
+     }
   }
 
 //+------------------------------------------------------------------+

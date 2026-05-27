@@ -1,0 +1,5 @@
+body{ font-family: Tahoma, sans-serif; padding: 20px; direction: rtl }
+.param-item{ margin:8px 0 }
+.pname{ display:inline-block; width:200px }
+.pvalue{ width:200px }
+.log-item{ border-bottom: 1px solid #ddd; padding:6px 0 }

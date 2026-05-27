@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fa">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Admin - Expert Control</title>
+    <link rel="stylesheet" href="/static/admin.css" />
+  </head>
+  <body>
+    <h1>پنل ادمین (Expert Control)</h1>
+
+    <div>
+      <label>توکن: </label>
+      <input id="token" type="text" placeholder="Paste token here" style="width:60%" />
+      <button onclick="saveToken()">ذخیره</button>
+    </div>
+
+    <section>
+      <h2>پارامترها</h2>
+      <div id="params">
+        {% for p in params %}
+          <div class="param-item">
+            <span class="pname">{{ p.name }}</span>
+            <input class="pvalue" data-name="{{ p.name }}" value="{{ p.value }}" />
+            <button onclick="updateParam(this)">بروزرسانی</button>
+          </div>
+        {% else %}
+          <div>No params</div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>لاگ‌ها (آخرین‌ها)</h2>
+      <div>
+        <button onclick="refreshLogs()">رفرش</button>
+      </div>
+      <div id="logs">
+        {% for l in logs %}
+          <div class="log-item">[{{ l.timestamp }}] <strong>{{ l.level }}</strong> - {{ l.message }}</div>
+        {% else %}
+          <div>No logs</div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <script src="/static/admin.js"></script>
+  </body>
+  </html>
