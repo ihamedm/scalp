@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "6.3"
+#property version   "6.4"
 
 #include <Trade\Trade.mqh>
 
@@ -52,6 +52,7 @@ input bool   EnableCamarillaCheck = true;      // فعال‌سازی محدود
 input double CamarillaDistance    = 50.0;      // حداقل فاصله مجاز از سطوح (Point)
 
 //------------------------- GLOBAL VARIABLES -------------------------
+bool   g_EnableCamarillaCheck = true; // وضعیت قابل تغییر در زمان اجرا
 CTrade GridTrade;
 bool   g_WaitingForMarketOpen = false;
 string g_GridID            = "";
@@ -116,6 +117,7 @@ void SaveState()
    GlobalVariableSet(GVarName("g_CurrentLot"), g_CurrentLot);
    GlobalVariableSet(GVarName("g_CurrentLotIndex"), (double)g_CurrentLotIndex);
    GlobalVariableSet(GVarName("g_OrderCommentSeq"), (double)g_OrderCommentSeq);
+   GlobalVariableSet(GVarName("EnableCamarillaCheck"), g_EnableCamarillaCheck ? 1.0 : 0.0);
    Print("📌 EA state saved to GlobalVariables.");
   }
 
@@ -140,6 +142,9 @@ bool LoadState()
    g_CurrentLotIndex    = (int)GlobalVariableGet(GVarName("g_CurrentLotIndex"));
    g_OrderCommentSeq    = GlobalVariableCheck(GVarName("g_OrderCommentSeq"))
                           ? (int)GlobalVariableGet(GVarName("g_OrderCommentSeq")) : 0;
+   g_EnableCamarillaCheck = GlobalVariableCheck(GVarName("EnableCamarillaCheck"))
+                          ? (GlobalVariableGet(GVarName("EnableCamarillaCheck")) >= 0.5)
+                          : EnableCamarillaCheck;
 
   // بازسازی g_CurrentLot بر اساس شاخص ذخیره شده
    if(g_CurrentLotIndex >= 0 && g_CurrentLotIndex < ArraySize(g_LotSteps))
@@ -160,7 +165,7 @@ bool LoadState()
 void ClearState()
   {
    string prefix = "GridHedge~" + _Symbol + "~" + IntegerToString(MagicNumber) + "~";
-   string names[] = {"inited","g_GridInstance","g_ActiveMagic","isTradingActive","tradingDone","buyExpansionCount","sellExpansionCount","lastBuyPosCount","lastSellPosCount","lastBuyExpansionPrice","lastSellExpansionPrice","g_MaxBuyExpansions","g_MaxSellExpansions","g_ActualGridStep","g_CurrentLot","g_CurrentLotIndex","g_OrderCommentSeq"};
+   string names[] = {"inited","g_GridInstance","g_ActiveMagic","isTradingActive","tradingDone","buyExpansionCount","sellExpansionCount","lastBuyPosCount","lastSellPosCount","lastBuyExpansionPrice","lastSellExpansionPrice","g_MaxBuyExpansions","g_MaxSellExpansions","g_ActualGridStep","g_CurrentLot","g_CurrentLotIndex","g_OrderCommentSeq","EnableCamarillaCheck"};
    for(int i=0;i<ArraySize(names);i++) GlobalVariableDel(prefix + names[i]);
    Print("📌 Cleared persisted EA state.");
   }
@@ -329,12 +334,12 @@ int OnInit()
             break;
            }
         } 
-      
+      g_EnableCamarillaCheck = EnableCamarillaCheck;
       PrintSymbolInfo();
       
     }
 
-    ShowCamarillaLevelsOnChart();
+    // ShowCamarillaLevelsOnChart();
 
     bool isTester = (bool)MQLInfoInteger(MQL_TESTER);
    if(isTester)
@@ -403,6 +408,9 @@ void OnDeinit(const int reason)
    ObjectDelete(0, "ValLot");
    ObjectDelete(0, "BtnLotMinus");
    ObjectDelete(0, "BtnLotPlus");
+   ObjectDelete(0, "BtnToggleCamarilla");
+   ObjectDelete(0, "LblCamarilla");
+   ObjectDelete(0, "ValCamarilla");
    Comment("");
 
    ObjectsDeleteAll(0, "Camarilla_");
@@ -607,6 +615,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          Print("حجم جدید: ", DoubleToString(g_CurrentLot, 3));
         }
       else Print("حداکثر حجم مجاز رسیده است.");
+      return;
+     }
+   else if(sparam == "BtnToggleCamarilla")
+     {
+      g_EnableCamarillaCheck = !g_EnableCamarillaCheck;
+      UpdateCamarillaLabel();
+      PrintFormat("EnableCamarillaCheck → %s", g_EnableCamarillaCheck ? "true" : "false");
       return;
      }
    else if(sparam == "BtnLotMinus")
@@ -1340,6 +1355,7 @@ void FinalizeGrid()
    ClearState();
    SaveState();
 
+   Comment("");
    SendLogToServer("INFO", StringFormat("Grid finalized manually | oldMagic=%d newMagic=%d", oldMagic, g_ActiveMagic));
    UpdateParamOnServer("GridActive", 0.0);
    PrintFormat("شبکه با Magic=%d پایان یافت. Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
@@ -1512,6 +1528,14 @@ void UpdateChartComment()
   void UpdateLotLabel()
   {
    ObjectSetString(0, "ValLot", OBJPROP_TEXT, DoubleToString(g_CurrentLot, 3));
+   UpdateCamarillaLabel();
+  }
+
+  //+------------------------------------------------------------------+
+void UpdateCamarillaLabel()
+  {
+   ObjectSetString(0, "ValCamarilla", OBJPROP_TEXT,
+                   g_EnableCamarillaCheck ? "true" : "false");
   }
 
   //+------------------------------------------------------------------+
@@ -1679,6 +1703,17 @@ void CreateLotButtons()
 
    // دکمه افزایش
    CreateButton("BtnLotPlus",  "+", 126, 127, 20, 20, clrBlueViolet, clrGreenYellow, 8);
+
+   // دکمه تغییر وضعیت Camarilla
+   CreateButton("BtnToggleCamarilla", "حمایت/مقاومت", 126, 151, 120, 20, clrWhite, clrDodgerBlue, 8);
+
+   ObjectCreate(0, "ValCamarilla", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ValCamarilla", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, "ValCamarilla", OBJPROP_XDISTANCE, 178);
+   ObjectSetInteger(0, "ValCamarilla", OBJPROP_YDISTANCE, 151);
+   ObjectSetString (0, "ValCamarilla", OBJPROP_TEXT,      g_EnableCamarillaCheck ? "true" : "false");
+   ObjectSetInteger(0, "ValCamarilla", OBJPROP_COLOR,     clrYellow);
+   ObjectSetInteger(0, "ValCamarilla", OBJPROP_FONTSIZE,  8);
   }
 //+------------------------------------------------------------------+
 void CreateButton(string name, string text, int x, int y,
@@ -1760,7 +1795,7 @@ CamarillaLevels GetTodayCamarilla()
 //+------------------------------------------------------------------+
 bool IsNearCamarillaLevel(double price, double minDistancePoints)
   {
-   if(!EnableCamarillaCheck) return false;
+   if(!g_EnableCamarillaCheck) return false;
 
    static CamarillaLevels lastLevels;
    static datetime lastDay = 0;
@@ -1800,7 +1835,7 @@ bool IsNearCamarillaLevel(double price, double minDistancePoints)
 //+------------------------------------------------------------------+
 void ShowCamarillaLevelsOnChart()
   {
-   if(!EnableCamarillaCheck) return;
+   if(!g_EnableCamarillaCheck) return;
 
    static datetime lastDisplayDay = 0;
    datetime todayStart = iTime(_Symbol, PERIOD_D1, 0);
