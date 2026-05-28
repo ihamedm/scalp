@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "6.1"
+#property version   "6.3"
 
 #include <Trade\Trade.mqh>
 
@@ -73,6 +73,7 @@ double g_ActualGridStep  = 0;
 int    g_ActiveMagic = 0;        // MagicNumber پویا برای شبکه‌ی جاری
 int    g_GridInstance = 0;       // شمارنده‌ی شبکه (برای تولید Magic یکتا)
 int    g_GridDirection = -1;     // جهت شبکه جاری (ORDER_TYPE_BUY / ORDER_TYPE_SELL)
+int    g_OrderCommentSeq = 0;    // شماره سفارش داخل شبکه جاری
 
 // حجم لات قابل تعدیل
 double g_CurrentLot = 0.01;      // حجم فعلی لات (جایگزین FixedLot)
@@ -114,6 +115,7 @@ void SaveState()
    GlobalVariableSet(GVarName("g_ActualGridStep"), g_ActualGridStep);
    GlobalVariableSet(GVarName("g_CurrentLot"), g_CurrentLot);
    GlobalVariableSet(GVarName("g_CurrentLotIndex"), (double)g_CurrentLotIndex);
+   GlobalVariableSet(GVarName("g_OrderCommentSeq"), (double)g_OrderCommentSeq);
    Print("📌 EA state saved to GlobalVariables.");
   }
 
@@ -136,6 +138,8 @@ bool LoadState()
    g_ActualGridStep     = GlobalVariableGet(GVarName("g_ActualGridStep"));
    g_CurrentLot         = GlobalVariableGet(GVarName("g_CurrentLot"));
    g_CurrentLotIndex    = (int)GlobalVariableGet(GVarName("g_CurrentLotIndex"));
+   g_OrderCommentSeq    = GlobalVariableCheck(GVarName("g_OrderCommentSeq"))
+                          ? (int)GlobalVariableGet(GVarName("g_OrderCommentSeq")) : 0;
 
   // بازسازی g_CurrentLot بر اساس شاخص ذخیره شده
    if(g_CurrentLotIndex >= 0 && g_CurrentLotIndex < ArraySize(g_LotSteps))
@@ -147,6 +151,8 @@ bool LoadState()
       Print("⚠️ شاخص لات نامعتبر، ریست شد.");
      }
 
+   g_GridID = "شبکه " + IntegerToString(g_GridInstance + 1);
+
    Print("📌 EA state loaded from GlobalVariables.");
    return true;
   }
@@ -154,9 +160,24 @@ bool LoadState()
 void ClearState()
   {
    string prefix = "GridHedge~" + _Symbol + "~" + IntegerToString(MagicNumber) + "~";
-   string names[] = {"inited","g_GridInstance","g_ActiveMagic","isTradingActive","tradingDone","buyExpansionCount","sellExpansionCount","lastBuyPosCount","lastSellPosCount","lastBuyExpansionPrice","lastSellExpansionPrice","g_MaxBuyExpansions","g_MaxSellExpansions","g_ActualGridStep","g_CurrentLot","g_CurrentLotIndex"};
+   string names[] = {"inited","g_GridInstance","g_ActiveMagic","isTradingActive","tradingDone","buyExpansionCount","sellExpansionCount","lastBuyPosCount","lastSellPosCount","lastBuyExpansionPrice","lastSellExpansionPrice","g_MaxBuyExpansions","g_MaxSellExpansions","g_ActualGridStep","g_CurrentLot","g_CurrentLotIndex","g_OrderCommentSeq"};
    for(int i=0;i<ArraySize(names);i++) GlobalVariableDel(prefix + names[i]);
    Print("📌 Cleared persisted EA state.");
+  }
+
+void PrepareGridCommentContext()
+  {
+   g_GridID = "شبکه " + IntegerToString(g_GridInstance + 1);
+   g_OrderCommentSeq = 0;
+  }
+
+string BuildOrderComment(string role, int &nextSeq)
+  {
+  if(g_GridID == "")
+    g_GridID = "شبکه " + IntegerToString(g_GridInstance + 1);
+
+  nextSeq = g_OrderCommentSeq + 1;
+  return g_GridID + " " + role + " #" + IntegerToString(nextSeq);
   }
 
 
@@ -520,24 +541,56 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
      {
       g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 1, 1000);
       UpdateExpansionLabels();
+      SaveState();
+      Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
+     }
+   else if(sparam == "BtnBuyExpPlus50")
+     {
+      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 50, 1000);
+      UpdateExpansionLabels();
+      SaveState();
+      Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
+     }
+   else if(sparam == "BtnBuyExpZero")
+     {
+      g_MaxBuyExpansions = 0;
+      UpdateExpansionLabels();
+      SaveState();
       Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
      }
    else if(sparam == "BtnBuyExpMinus")
      {
       g_MaxBuyExpansions = MathMax(g_MaxBuyExpansions - 1, 0);
       UpdateExpansionLabels();
+      SaveState();
       Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
      }
    else if(sparam == "BtnSellExpPlus")
      {
       g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 1, 1000);
       UpdateExpansionLabels();
+      SaveState();
+      Print("MaxSellExpansions → ", g_MaxSellExpansions);
+     }
+   else if(sparam == "BtnSellExpPlus50")
+     {
+      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 50, 1000);
+      UpdateExpansionLabels();
+      SaveState();
+      Print("MaxSellExpansions → ", g_MaxSellExpansions);
+     }
+   else if(sparam == "BtnSellExpZero")
+     {
+      g_MaxSellExpansions = 0;
+      UpdateExpansionLabels();
+      SaveState();
       Print("MaxSellExpansions → ", g_MaxSellExpansions);
      }
    else if(sparam == "BtnSellExpMinus")
      {
       g_MaxSellExpansions = MathMax(g_MaxSellExpansions - 1, 0);
       UpdateExpansionLabels();
+      SaveState();
       Print("MaxSellExpansions → ", g_MaxSellExpansions);
      }
 
@@ -628,7 +681,7 @@ bool AnyGridExists()
 //+------------------------------------------------------------------+
 void ExecuteStrategy()
   {
-   g_GridID = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES|TIME_SECONDS);
+   PrepareGridCommentContext();
 
    int direction = -1;
    if(UseManualDirection)
@@ -651,14 +704,14 @@ void ExecuteStrategy()
       g_GridDirection = direction;
       double sl = (SL_Points > 0) ? PointToPrice(ask, SL_Points, true,  true) : 0;
       double tp = (TP_Points > 0) ? PointToPrice(ask, TP_Points, false, true) : 0;
-      PlaceInitialLimit(ORDER_TYPE_BUY, g_CurrentLot, sl, tp, "Initial Buy");
+      PlaceInitialLimit(ORDER_TYPE_BUY, g_CurrentLot, sl, tp, "اولیه");
      }
    else
      {
       g_GridDirection = direction;
       double sl = (SL_Points > 0) ? PointToPrice(bid, SL_Points, true,  false) : 0;
       double tp = (TP_Points > 0) ? PointToPrice(bid, TP_Points, false, false) : 0;
-      PlaceInitialLimit(ORDER_TYPE_SELL, g_CurrentLot, sl, tp, "Initial Sell");
+      PlaceInitialLimit(ORDER_TYPE_SELL, g_CurrentLot, sl, tp, "اولیه");
      }
 
    PlaceGrid();
@@ -754,6 +807,8 @@ bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, s
 
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
+   int commentSeq = 0;
+   string orderComment = BuildOrderComment(comment, commentSeq);
    req.action       = TRADE_ACTION_PENDING;
    req.symbol       = _Symbol;
    req.volume       = lot;
@@ -762,7 +817,7 @@ bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, s
    req.sl           = sl;
    req.tp           = tp;
    req.magic        = g_ActiveMagic;
-   req.comment      = "[" + g_GridID + "] " + comment;
+   req.comment      = orderComment;
    req.type_filling = ORDER_FILLING_RETURN;
    req.type_time    = ORDER_TIME_GTC;
 
@@ -771,8 +826,9 @@ bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, s
       PrintFormat("❌ Limit خطا: err=%d retcode=%d", GetLastError(), res.retcode);
       return false;
      }
+   g_OrderCommentSeq = commentSeq;
    PrintFormat("✅ %s | Price=%.5f | SL=%.5f | TP=%.5f | Lot=%.2f",
-               comment, price, sl, tp, lot);
+               orderComment, price, sl, tp, lot);
    return true;
   }
 
@@ -799,7 +855,7 @@ void PlaceGrid()
          double lot = CalcLot(SL_Points);
          double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  true) : 0;
          double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, true) : 0;
-         PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, entry, sl, tp, "BuyStop_"+IntegerToString(i));
+         PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, entry, sl, tp, "خرید");
         }
      }
    else if(g_GridDirection == ORDER_TYPE_SELL)
@@ -811,7 +867,7 @@ void PlaceGrid()
          double lot = CalcLot(SL_Points);
          double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  false) : 0;
          double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, false) : 0;
-         PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, entry, sl, tp, "SellStop_"+IntegerToString(i));
+         PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, entry, sl, tp, "فروش");
         }
      }
    else
@@ -824,7 +880,7 @@ void PlaceGrid()
          double lot = CalcLot(SL_Points);
          double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  true) : 0;
          double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, true) : 0;
-         PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, entry, sl, tp, "BuyStop_"+IntegerToString(i));
+         PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, entry, sl, tp, "خرید");
         }
       for(int i = 2; i <= GridLevels; i++)
         {
@@ -833,7 +889,7 @@ void PlaceGrid()
          double lot = CalcLot(SL_Points);
          double sl  = (SL_Points > 0) ? PointToPrice(entry, SL_Points, true,  false) : 0;
          double tp  = (TP_Points > 0) ? PointToPrice(entry, TP_Points, false, false) : 0;
-         PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, entry, sl, tp, "SellStop_"+IntegerToString(i));
+         PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, entry, sl, tp, "فروش");
         }
      }
    Print("✅ شبکه اولیه ثبت شد.");
@@ -859,6 +915,8 @@ bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
 
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
+   int commentSeq = 0;
+   string orderComment = BuildOrderComment(comment, commentSeq);
    req.action       = TRADE_ACTION_PENDING;
    req.symbol       = _Symbol;
    req.volume       = lot;
@@ -867,7 +925,7 @@ bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
    req.sl           = sl;
    req.tp           = tp;
    req.magic        = g_ActiveMagic;
-   req.comment      = "[" + g_GridID + "] " + comment;
+   req.comment      = orderComment;
    req.type_filling = ORDER_FILLING_RETURN;
    req.type_time    = ORDER_TIME_GTC;
 
@@ -876,8 +934,9 @@ bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
       PrintFormat("❌ OrderSend خطا: err=%d retcode=%d comment=%s", GetLastError(), res.retcode, comment);
       return false;
      }
+   g_OrderCommentSeq = commentSeq;
    PrintFormat("✅ %s | Entry=%.5f | SL=%.5f | TP=%.5f | Lot=%.2f",
-               comment, entry, sl, tp, lot);
+               orderComment, entry, sl, tp, lot);
    return true;
   }
 
@@ -895,6 +954,7 @@ bool TryBuyExpansion(string reason)
 
    buyExpansionCount++;
    UpdateExpansionLabels();
+   SaveState();
    return true;
   }
 
@@ -912,6 +972,7 @@ bool TrySellExpansion(string reason)
 
    sellExpansionCount++;
    UpdateExpansionLabels();
+   SaveState();
    return true;
   }
 
@@ -1034,7 +1095,7 @@ bool BuyAdjustment()
    double lot = CalcLot(SL_Points);
    double sl  = (SL_Points > 0) ? PointToPrice(candidate, SL_Points, true,  true) : 0;
    double tp  = (TP_Points > 0) ? PointToPrice(candidate, TP_Points, false, true) : 0;
-   if(PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, candidate, sl, tp, "Buy_Dyn"))
+   if(PlacePendingOrder(ORDER_TYPE_BUY_STOP, lot, candidate, sl, tp, "خرید"))
      {
       Print("🔧 BuyAdjustment | سفارش جدید ثبت شد.");
       return true;
@@ -1072,7 +1133,7 @@ bool SellAdjustment()
    double lot = CalcLot(SL_Points);
    double sl  = (SL_Points > 0) ? PointToPrice(candidate, SL_Points, true,  false) : 0;
    double tp  = (TP_Points > 0) ? PointToPrice(candidate, TP_Points, false, false) : 0;
-   if(PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, candidate, sl, tp, "Sell_Dyn"))
+   if(PlacePendingOrder(ORDER_TYPE_SELL_STOP, lot, candidate, sl, tp, "فروش"))
      {
       Print("🔧 SellAdjustment | سفارش جدید ثبت شد.");
       return true;
@@ -1153,13 +1214,41 @@ void CheckTotalProfitLoss()
 
    if(totalProfit >= TotalProfitTarget)
      {
+      int oldMagic = g_ActiveMagic;
       PrintFormat("✅ هدف سود کل برآورده شد: %.2f$", totalProfit);
-      CloseAll(); tradingDone = true; isTradingActive = false;
+      CloseAll();
+      g_GridInstance++;
+      g_ActiveMagic = MagicNumber + g_GridInstance;
+      buyExpansionCount  = 0;
+      sellExpansionCount = 0;
+      lastBuyPosCount    = 0;
+      lastSellPosCount   = 0;
+      g_OrderCommentSeq  = 0;
+      g_GridID           = "";
+      tradingDone = true;
+      isTradingActive = false;
+      ClearState();
+      SaveState();
+      PrintFormat("شبکه با Magic=%d بسته شد. Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
      }
    else if(totalProfit <= TotalStopLoss)
      {
+      int oldMagic = g_ActiveMagic;
       PrintFormat("🛑 حد ضرر کل فعال شد: %.2f$", totalProfit);
-      CloseAll(); tradingDone = true; isTradingActive = false;
+      CloseAll();
+      g_GridInstance++;
+      g_ActiveMagic = MagicNumber + g_GridInstance;
+      buyExpansionCount  = 0;
+      sellExpansionCount = 0;
+      lastBuyPosCount    = 0;
+      lastSellPosCount   = 0;
+      g_OrderCommentSeq  = 0;
+      g_GridID           = "";
+      tradingDone = true;
+      isTradingActive = false;
+      ClearState();
+      SaveState();
+      PrintFormat("شبکه با Magic=%d بسته شد. Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
      }
   }
 
@@ -1207,13 +1296,23 @@ void CloseProfitableGrid()
 //+------------------------------------------------------------------+
 void CloseAllGrid()
   {
+   int oldMagic = g_ActiveMagic;
    CloseAll();
+   g_GridInstance++;
+   g_ActiveMagic = MagicNumber + g_GridInstance;
+   buyExpansionCount  = 0;
+   sellExpansionCount = 0;
+   lastBuyPosCount    = 0;
+   lastSellPosCount   = 0;
+   g_OrderCommentSeq  = 0;
+   g_GridID           = "";
    isTradingActive = false;
    tradingDone     = true;
    ClearState();
+   SaveState();
    SendLogToServer("INFO", "Closed all grid positions");
    UpdateParamOnServer("GridActive", 0.0);
-   Print("شبکه متوقف شد. برای شروع مجدد دکمه «شروع شبکه» را بزنید.");
+   PrintFormat("شبکه با Magic=%d بسته شد. Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
   }
 
 //+------------------------------------------------------------------+
@@ -1234,6 +1333,8 @@ void FinalizeGrid()
    sellExpansionCount = 0;
    lastBuyPosCount    = 0;
    lastSellPosCount   = 0;
+   g_OrderCommentSeq  = 0;
+   g_GridID           = "";
    isTradingActive    = false;
    tradingDone        = true;
    ClearState();
@@ -1257,6 +1358,39 @@ double CalculateTotalProfit()
          totalProfit += PositionGetDouble(POSITION_PROFIT);
      }
    return totalProfit;
+  }
+
+//+------------------------------------------------------------------+
+double CalculateClosedGridProfit()
+  {
+   double closedProfit = 0.0;
+   if(!HistorySelect(0, TimeCurrent()))
+      return 0.0;
+
+   int totalDeals = HistoryDealsTotal();
+   for(int i = 0; i < totalDeals; i++)
+     {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != g_ActiveMagic) continue;
+      if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
+
+      long dealType = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL) continue;
+
+      long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entryType != DEAL_ENTRY_OUT &&
+         entryType != DEAL_ENTRY_INOUT &&
+         entryType != DEAL_ENTRY_OUT_BY)
+         continue;
+
+      closedProfit += HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+      closedProfit += HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+      closedProfit += HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      closedProfit += HistoryDealGetDouble(dealTicket, DEAL_FEE);
+     }
+
+   return closedProfit;
   }
 
 //+------------------------------------------------------------------+
@@ -1315,6 +1449,7 @@ void UpdateChartComment()
 
    // محاسبه آمار
    double totalProfit = 0;
+   double closedProfit = CalculateClosedGridProfit();
    int totalPos = 0, buyPos = 0, sellPos = 0;
    int buyOrders = 0, sellOrders = 0;
 
@@ -1355,11 +1490,13 @@ void UpdateChartComment()
    string commentText = "";
    commentText += "═══════ GridHedge Ultimate ═══════\n";
    commentText += "🔢 Magic   : " + IntegerToString(g_ActiveMagic) + "\n";
+   commentText += "🏷️ شناسه   : " + g_GridID + "\n";
    commentText += "🧭 جهت     : " + directionStr + "\n";
    commentText += "📦 حجم لات : " + DoubleToString(g_CurrentLot, 3) + "\n";
    commentText += "📊 پوزیشن‌ها: " + IntegerToString(totalPos) + "  ( خرید:" + IntegerToString(buyPos) + " | فروش:" + IntegerToString(sellPos) + " )\n";
    commentText += "⏳ سفارشات : Buy Stop:" + IntegerToString(buyOrders) + " | Sell Stop:" + IntegerToString(sellOrders) + "\n";
-   commentText += "💰 سود/زیان: " + DoubleToString(totalProfit, 2) + " $\n";
+   commentText += "💰 سود/زیان باز: " + DoubleToString(totalProfit, 2) + " $\n";
+   commentText += "✅ سود/زیان بسته‌شده: " + DoubleToString(closedProfit, 2) + " $\n";
    commentText += "🔄 گسترش   : Buy " + IntegerToString(buyExpansionCount) + "/" + IntegerToString(g_MaxBuyExpansions) +
                   " | Sell " + IntegerToString(sellExpansionCount) + "/" + IntegerToString(g_MaxSellExpansions) + "\n";
    commentText += "📏 گام شبکه: " + DoubleToString(GridStep_Points, 0) + " point\n";
@@ -1487,9 +1624,11 @@ void CreateExpansionButtons()
   ObjectSetInteger(0, "ValBuyExp", OBJPROP_XDISTANCE, 183);
   ObjectSetInteger(0, "ValBuyExp", OBJPROP_YDISTANCE, 65);
    ObjectSetString (0, "ValBuyExp", OBJPROP_TEXT,      "0/" + IntegerToString(g_MaxBuyExpansions));
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_COLOR,     clrYellow);
-   ObjectSetInteger(0, "ValBuyExp", OBJPROP_FONTSIZE,  8);
+  ObjectSetInteger(0, "ValBuyExp", OBJPROP_COLOR,     clrYellow);
+  ObjectSetInteger(0, "ValBuyExp", OBJPROP_FONTSIZE,  8);
   CreateButton("BtnBuyExpPlus",  "+", 126, 70, 20, 20, clrWhite, clrGreen, 8);
+  CreateButton("BtnBuyExpPlus50", "+50", 72, 70, 44, 20, clrWhite, clrGreen, 8);
+  CreateButton("BtnBuyExpZero",   "0",   42, 70, 20, 20, clrBlack, clrWhite, 8);
 
    ObjectCreate(0, "LblSellExp", OBJ_LABEL, 0, 0, 0);
    ObjectSetInteger(0, "LblSellExp", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
@@ -1505,9 +1644,11 @@ void CreateExpansionButtons()
   ObjectSetInteger(0, "ValSellExp", OBJPROP_XDISTANCE, 183);
   ObjectSetInteger(0, "ValSellExp", OBJPROP_YDISTANCE, 89);
    ObjectSetString (0, "ValSellExp", OBJPROP_TEXT,      "0/" + IntegerToString(g_MaxSellExpansions));
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_COLOR,     clrYellow);
-   ObjectSetInteger(0, "ValSellExp", OBJPROP_FONTSIZE,  8);
+  ObjectSetInteger(0, "ValSellExp", OBJPROP_COLOR,     clrYellow);
+  ObjectSetInteger(0, "ValSellExp", OBJPROP_FONTSIZE,  8);
   CreateButton("BtnSellExpPlus",  "+", 126, 94, 20, 20, clrWhite, clrGreen, 8);
+  CreateButton("BtnSellExpPlus50", "+50", 72, 94, 44, 20, clrWhite, clrGreen, 8);
+  CreateButton("BtnSellExpZero",   "0",   42, 94, 20, 20, clrBlack, clrWhite, 8);
   }
 
 //+------------------------------------------------------------------+
