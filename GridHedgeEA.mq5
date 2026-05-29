@@ -4,10 +4,17 @@
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "6.4"
+#property version   "6.5"
 
 #include <Trade\Trade.mqh>
 
+//------------------------- CAMARILLA RANGE MODES -------------------------
+enum CamarillaRangeMode {
+   MODE_H1_L1 = 0,    // بین H1 و L1 (محدود)
+   MODE_H2_L2 = 1,    // بین H2 و L2 (میانه) ← پیشنهادی
+   MODE_H3_L3 = 2,    // بین H3 و L3 (باز)
+   MODE_CUSTOM = 3    // دلخواه (اعداد 1-5 را در زیر انتخاب کنید)
+};
 
 //------------------------- INPUT PARAMETERS -------------------------
 input group "=== تنظیمات کلی ==="
@@ -47,12 +54,26 @@ input int    InitialMaxSellExpansions = 4;
 input double ExpansionMinDistanceFactor = 0.8;   // حداقل فاصله از سفارشات موجود (نسبت به فاصله پله ها)
 input int    ExpansionMethod       = 1;        //متد گسترش : 0 = فعال‌شدن سفارش | 1 = تغییر قیمت
 
+
+input group "=== تریلینگ سبد ==="
+input bool   UseBasketTrailing   = false;      // فعال‌سازی تریلینگ حد ضرر کل شبکه
+input double TrailingActivation  = 5.0;       // سود اولیه برای شروع تریلینگ (دلار)
+input double TrailingStep        = 3.0;       // فاصله حد ضرر شناور از اوج سود (دلار)
+
+
 input group "=== سطوح حمایت و مقاومت  ==="
-input bool   EnableCamarillaCheck = true;      // فعال‌سازی محدودیت سطوح 
+input bool   EnableCamarillaCheck = false;      // فعال‌سازی محدودیت سطوح 
 input double CamarillaDistance    = 50.0;      // حداقل فاصله مجاز از سطوح (Point)
+input bool   EnableCamarillaRangeCheck = false; // محدود کردن سفارشات درون بازه سطوح
+input CamarillaRangeMode CamarillaRange = MODE_H2_L2;  // حالت بازه: H1-L1, H2-L2, H3-L3, یا دلخواه
+input int    CamarillaCustomUpper  = 5;        // سطح بالای دلخواه (فقط اگر MODE_CUSTOM) - 1=H5, 2=H4, 3=H3, 4=H2, 5=H1
+input int    CamarillaCustomLower  = 1;        // سطح پایین دلخواه (فقط اگر MODE_CUSTOM) - 1=L5, 2=L4, 3=L3, 4=L2, 5=L1
 
 //------------------------- GLOBAL VARIABLES -------------------------
 bool   g_EnableCamarillaCheck = true; // وضعیت قابل تغییر در زمان اجرا
+bool   g_EnableCamarillaRangeCheck = true; // محدود کردن سفارشات درون بازه
+CamarillaRangeMode g_CamarillaRange = MODE_H2_L2; // متغیر قابل تغییر برای حالت بازه
+double g_TrailingActivation = 5.0; // مقدار فعال‌سازی تریلینگ قابل تغییر
 CTrade GridTrade;
 bool   g_WaitingForMarketOpen = false;
 string g_GridID            = "";
@@ -75,11 +96,29 @@ int    g_ActiveMagic = 0;        // MagicNumber پویا برای شبکه‌ی 
 int    g_GridInstance = 0;       // شمارنده‌ی شبکه (برای تولید Magic یکتا)
 int    g_GridDirection = -1;     // جهت شبکه جاری (ORDER_TYPE_BUY / ORDER_TYPE_SELL)
 int    g_OrderCommentSeq = 0;    // شماره سفارش داخل شبکه جاری
+int    g_adxHandle = INVALID_HANDLE;
+int    g_rsiHandle = INVALID_HANDLE;
+
+int    g_TrendStrength = 0;   // قدرت روند (0-100)
+bool   UseADXFilter        = true;      // فعال‌سازی فیلتر ADX
+int    ADX_Period          = 14;        // دوره ADX
+double ADX_Threshold       = 22.0;      // حداقل ADX برای روند قوی
+bool   UseRSIFilter        = true;      // فعال‌سازی فیلتر RSI
+int    RSI_Period          = 14;        // دوره RSI
+double RSI_BuyMax          = 65.0;      // حداکثر RSI برای خرید (برای جلوگیری از اشباع خرید)
+double RSI_SellMin         = 35.0;      // حداقل RSI برای فروش (برای جلوگیری از اشباع فروش)
+
 
 // حجم لات قابل تعدیل
 double g_CurrentLot = 0.01;      // حجم فعلی لات (جایگزین FixedLot)
 double g_LotSteps[] = {0.01, 0.02, 0.03, 0.04, 0.05}; // مراحل تغییر حجم
 int    g_CurrentLotIndex = 0;    // فهرس مرحله فعلی
+
+
+double g_PeakProfit        = 0.0;    // اوج سود شناور (برای تریلینگ)
+double g_TrailingStopLevel = 0.0;    // سطح حد ضرر شناور (دلار)
+bool   g_TrailingActivated = false;  // آیا تریلینگ فعال شده است؟
+
 
 //------------- API / Server Sync Variables ---------
 datetime g_LastLogSyncTime = 0;  // آخرین زمان ارسال لاگ
@@ -118,6 +157,9 @@ void SaveState()
    GlobalVariableSet(GVarName("g_CurrentLotIndex"), (double)g_CurrentLotIndex);
    GlobalVariableSet(GVarName("g_OrderCommentSeq"), (double)g_OrderCommentSeq);
    GlobalVariableSet(GVarName("EnableCamarillaCheck"), g_EnableCamarillaCheck ? 1.0 : 0.0);
+   GlobalVariableSet(GVarName("EnableCamarillaRangeCheck"), g_EnableCamarillaRangeCheck ? 1.0 : 0.0);
+   GlobalVariableSet(GVarName("g_CamarillaRange"), (double)g_CamarillaRange);
+   GlobalVariableSet(GVarName("TrailingActivation"), g_TrailingActivation);
    Print("📌 EA state saved to GlobalVariables.");
   }
 
@@ -145,6 +187,15 @@ bool LoadState()
    g_EnableCamarillaCheck = GlobalVariableCheck(GVarName("EnableCamarillaCheck"))
                           ? (GlobalVariableGet(GVarName("EnableCamarillaCheck")) >= 0.5)
                           : EnableCamarillaCheck;
+   g_EnableCamarillaRangeCheck = GlobalVariableCheck(GVarName("EnableCamarillaRangeCheck"))
+                          ? (GlobalVariableGet(GVarName("EnableCamarillaRangeCheck")) >= 0.5)
+                          : EnableCamarillaRangeCheck;
+   g_CamarillaRange = GlobalVariableCheck(GVarName("g_CamarillaRange"))
+                          ? (CamarillaRangeMode)(int)GlobalVariableGet(GVarName("g_CamarillaRange"))
+                          : CamarillaRange;
+   g_TrailingActivation = GlobalVariableCheck(GVarName("TrailingActivation"))
+                          ? GlobalVariableGet(GVarName("TrailingActivation"))
+                          : TrailingActivation;
 
   // بازسازی g_CurrentLot بر اساس شاخص ذخیره شده
    if(g_CurrentLotIndex >= 0 && g_CurrentLotIndex < ArraySize(g_LotSteps))
@@ -165,7 +216,7 @@ bool LoadState()
 void ClearState()
   {
    string prefix = "GridHedge~" + _Symbol + "~" + IntegerToString(MagicNumber) + "~";
-   string names[] = {"inited","g_GridInstance","g_ActiveMagic","isTradingActive","tradingDone","buyExpansionCount","sellExpansionCount","lastBuyPosCount","lastSellPosCount","lastBuyExpansionPrice","lastSellExpansionPrice","g_MaxBuyExpansions","g_MaxSellExpansions","g_ActualGridStep","g_CurrentLot","g_CurrentLotIndex","g_OrderCommentSeq","EnableCamarillaCheck"};
+   string names[] = {"inited","g_GridInstance","g_ActiveMagic","isTradingActive","tradingDone","buyExpansionCount","sellExpansionCount","lastBuyPosCount","lastSellPosCount","lastBuyExpansionPrice","lastSellExpansionPrice","g_MaxBuyExpansions","g_MaxSellExpansions","g_ActualGridStep","g_CurrentLot","g_CurrentLotIndex","g_OrderCommentSeq","EnableCamarillaCheck","EnableCamarillaRangeCheck","g_CamarillaRange"};
    for(int i=0;i<ArraySize(names);i++) GlobalVariableDel(prefix + names[i]);
    Print("📌 Cleared persisted EA state.");
   }
@@ -313,6 +364,9 @@ int OnInit()
       g_ActualGridStep = GridStep_Points * _Point;
       PrintSymbolInfo();
       Print("🔁 حالت قبلی بارگذاری شد؛ مقدارها ریست نشدند.");
+      // اگر LoadState موفق باشد، اما g_TrailingActivation بارگذاری نشود
+      if(g_TrailingActivation <= 0)
+        g_TrailingActivation = TrailingActivation;
      }
    else
      {
@@ -335,9 +389,25 @@ int OnInit()
            }
         } 
       g_EnableCamarillaCheck = EnableCamarillaCheck;
-      PrintSymbolInfo();
-      
+      g_EnableCamarillaRangeCheck = EnableCamarillaRangeCheck;
+      g_CamarillaRange = CamarillaRange;
+      g_TrailingActivation = TrailingActivation;
     }
+
+   if(UseADXFilter)
+     {
+      g_adxHandle = iADX(_Symbol, PERIOD_CURRENT, ADX_Period);
+      if(g_adxHandle == INVALID_HANDLE)
+         Print("⚠️ خطا در ایجاد هندل ADX");
+     }
+
+   if(UseRSIFilter)
+     {
+      g_rsiHandle = iRSI(_Symbol, PERIOD_CURRENT, RSI_Period, PRICE_CLOSE);
+      if(g_rsiHandle == INVALID_HANDLE)
+         Print("⚠️ خطا در ایجاد هندل RSI");
+     }
+
 
     // ShowCamarillaLevelsOnChart();
 
@@ -394,6 +464,9 @@ void OnDeinit(const int reason)
    // قبل از پاک‌سازی رابط، وضعیت را ذخیره کن تا تغییر تایم‌فریم باعث ریست تنظیمات نشود
    SaveState();
 
+   if(g_adxHandle != INVALID_HANDLE) IndicatorRelease(g_adxHandle);
+   if(g_rsiHandle != INVALID_HANDLE) IndicatorRelease(g_rsiHandle);
+
    ObjectDelete(0, "BtnStartGrid");
    ObjectDelete(0, "BtnCloseProfitable");
    ObjectDelete(0, "BtnCloseAllGrid");
@@ -411,6 +484,14 @@ void OnDeinit(const int reason)
    ObjectDelete(0, "BtnToggleCamarilla");
    ObjectDelete(0, "LblCamarilla");
    ObjectDelete(0, "ValCamarilla");
+   ObjectDelete(0, "BtnToggleCamarillaRange");
+   ObjectDelete(0, "ValCamarillaRange");
+   ObjectDelete(0, "BtnEnableCamarillaRange");
+   ObjectDelete(0, "ValRangeEnabled");
+   ObjectDelete(0, "BtnTrailingActivationPlus");
+   ObjectDelete(0, "BtnTrailingActivationMinus");
+   ObjectDelete(0, "ValTrailingActivation");
+   ObjectDelete(0, "LblTrailingActivation");
    Comment("");
 
    ObjectsDeleteAll(0, "Camarilla_");
@@ -530,7 +611,11 @@ void OnTick()
       ProcessPriceMovementExpansion();
      }
   UpdateChartComment(); 
-   CheckTotalProfitLoss();
+
+  if(UseBasketTrailing)
+    CheckBasketTrailingStop();
+  else
+    CheckTotalProfitLoss();
   }
 
 //+------------------------------------------------------------------+
@@ -624,6 +709,56 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       PrintFormat("EnableCamarillaCheck → %s", g_EnableCamarillaCheck ? "true" : "false");
       return;
      }
+   else if(sparam == "BtnToggleCamarillaRange")
+     {
+      // Cycle through range modes: H1-L1 → H2-L2 → H3-L3 → CUSTOM
+      if(g_CamarillaRange == MODE_H1_L1)
+        {
+         g_CamarillaRange = MODE_H2_L2;
+         Print("🔄 بازه تغییر یافت: H2-L2");
+        }
+      else if(g_CamarillaRange == MODE_H2_L2)
+        {
+         g_CamarillaRange = MODE_H3_L3;
+         Print("🔄 بازه تغییر یافت: H3-L3");
+        }
+      else if(g_CamarillaRange == MODE_H3_L3)
+        {
+         g_CamarillaRange = MODE_CUSTOM;
+         PrintFormat("🔄 بازه تغییر یافت: CUSTOM (%d-%d)", CamarillaCustomUpper, CamarillaCustomLower);
+        }
+      else // MODE_CUSTOM
+        {
+         g_CamarillaRange = MODE_H1_L1;
+         Print("🔄 بازه تغییر یافت: H1-L1");
+        }
+      UpdateCamarillaLabel();
+      return;
+     }
+   else if(sparam == "BtnEnableCamarillaRange")
+     {
+      g_EnableCamarillaRangeCheck = !g_EnableCamarillaRangeCheck;
+      ObjectSetString(0, "ValRangeEnabled", OBJPROP_TEXT, g_EnableCamarillaRangeCheck ? "ON" : "OFF");
+      ObjectSetInteger(0, "ValRangeEnabled", OBJPROP_COLOR, g_EnableCamarillaRangeCheck ? clrLime : clrRed);
+      PrintFormat("✓ Range Check → %s", g_EnableCamarillaRangeCheck ? "ON" : "OFF");
+      return;
+     }
+   else if(sparam == "BtnTrailingActivationPlus")
+     {
+      g_TrailingActivation += 1.0;
+      ObjectSetString(0, "ValTrailingActivation", OBJPROP_TEXT, DoubleToString(g_TrailingActivation, 2));
+      SaveState();
+      PrintFormat("TrailingActivation → %.2f USD", g_TrailingActivation);
+      return;
+     }
+   else if(sparam == "BtnTrailingActivationMinus")
+     {
+      g_TrailingActivation = MathMax(g_TrailingActivation - 1.0, 0.1);
+      ObjectSetString(0, "ValTrailingActivation", OBJPROP_TEXT, DoubleToString(g_TrailingActivation, 2));
+      SaveState();
+      PrintFormat("TrailingActivation → %.2f USD", g_TrailingActivation);
+      return;
+     }
    else if(sparam == "BtnLotMinus")
      {
       if(g_CurrentLotIndex - 1 >= 0)
@@ -663,6 +798,8 @@ void StartGridByButton()
    
    isTradingActive = true;
    tradingDone     = false;
+
+   ResetTrailingState();
    ExecuteStrategy();
    SaveState();
   }
@@ -697,6 +834,7 @@ bool AnyGridExists()
 void ExecuteStrategy()
   {
    PrepareGridCommentContext();
+   ResetTrailingState();
 
    int direction = -1;
    if(UseManualDirection)
@@ -741,11 +879,21 @@ void ExecuteStrategy()
    sellExpansionCount = 0;
   }
 
+
+  void ResetTrailingState()
+  {
+   g_PeakProfit        = 0.0;
+   g_TrailingStopLevel = TotalStopLoss;   // سطح اولیه = حد ضرر اصلی (عددی منفی)
+   g_TrailingActivated = false;
+  }
+
+
 //+------------------------------------------------------------------+
 //| تشخیص روند - چند کندل + شیب EMA                                |
 //+------------------------------------------------------------------+
 int DetectTrendFromEMA()
   {
+   g_TrendStrength = 0;
    int needed = MathMax(TrendConfirmCandles, 1) + 1;
    int handle = iMA(_Symbol, 0, TrendMAPeriod, TrendMAShift, TrendMAMethod, PRICE_CLOSE);
    if(handle == INVALID_HANDLE) { Print("خطا در EMA handle"); return -1; }
@@ -772,15 +920,61 @@ int DetectTrendFromEMA()
    bool slopeUp   = ema[0] > ema[confirm];
    bool slopeDown = ema[0] < ema[confirm];
 
-   if(bullish && slopeUp)   return ORDER_TYPE_BUY;
-   if(bearish && slopeDown) return ORDER_TYPE_SELL;
+   int direction = -1;
+   if(bullish && slopeUp)   direction = ORDER_TYPE_BUY;
+   else if(bearish && slopeDown) direction = ORDER_TYPE_SELL;
+   else
+     {
+      // بازار رنج – تصمیم ساده
+      direction = (cls[0] > ema[0]) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+     }
 
-   // بازار رنج – تصمیم ساده
-   if(cls[0] > ema[0]) return ORDER_TYPE_BUY;
-   if(cls[0] < ema[0]) return ORDER_TYPE_SELL;
-   return ORDER_TYPE_BUY;
+   // ---- ADX Filter ----
+   double adxVal = 0;
+   bool adxOk = true;
+   if(UseADXFilter && g_adxHandle != INVALID_HANDLE)
+     {
+      double adx[];
+      ArraySetAsSeries(adx, true);
+      if(CopyBuffer(g_adxHandle, 0, 0, 1, adx) == 1)
+        {
+         adxVal = adx[0];
+         if(adxVal < ADX_Threshold)
+            adxOk = false;
+        }
+     }
+
+   // ---- RSI Filter ----
+   double rsiVal = 50.0;
+   bool rsiOk = true;
+   if(UseRSIFilter && g_rsiHandle != INVALID_HANDLE)
+     {
+      double rsi[];
+      ArraySetAsSeries(rsi, true);
+      if(CopyBuffer(g_rsiHandle, 0, 0, 1, rsi) == 1)
+        {
+         rsiVal = rsi[0];
+         if(direction == ORDER_TYPE_BUY && rsiVal > RSI_BuyMax)
+            rsiOk = false;
+         else if(direction == ORDER_TYPE_SELL && rsiVal < RSI_SellMin)
+            rsiOk = false;
+        }
+     }
+
+   // محاسبه قدرت کلی (0-100)
+   int strength = 50; // پایه
+   if(bullish && slopeUp) strength += 20; else if(!bullish || !slopeUp) strength -= 10;
+   if(adxOk) strength += 20; else strength -= 20;
+   if(rsiOk) strength += 10; else strength -= 10;
+   strength = MathMax(0, MathMin(100, strength));
+   g_TrendStrength = strength;
+
+   PrintFormat("🧭 تشخیص روند: %s (قدرت: %d%%) | ADX=%.2f (آستانه=%.2f) | RSI=%.2f",
+               direction == ORDER_TYPE_BUY ? "خرید" : (direction == ORDER_TYPE_SELL ? "فروش" : "نامشخص"),
+               strength, adxVal, ADX_Threshold, rsiVal);
+
+   return direction;
   }
-
 
 //+------------------------------------------------------------------+
 //| Limit Order اولیه                                                |
@@ -794,6 +988,14 @@ bool PlaceInitialLimit(ENUM_ORDER_TYPE type, double lot, double sl, double tp, s
                   : SymbolInfoDouble(_Symbol, SYMBOL_BID) + halfStep;
    price = NormalizePriceToTick(price);
    bool isBuy = (type == ORDER_TYPE_BUY);
+   
+   // بررسی بازه سطوح کاماریلا
+   if(!IsPriceWithinCamarillaRange(price))
+     {
+      PrintFormat("⛔ سفارش اولیه ایجاد نشد - قیمت خارج از بازه: %.5f", price);
+      return false;
+     }
+   
    sl = (SL_Points > 0) ? ProtectionPriceFromEntry(price, SL_Points, true, isBuy) : 0;
    tp = (TP_Points > 0) ? ProtectionPriceFromEntry(price, TP_Points, false, isBuy) : 0;
 
@@ -925,6 +1127,13 @@ bool PlacePendingOrder(ENUM_ORDER_TYPE type, double lot, double entry,
    if(IsTooCloseToExisting(entry, type))
      {
       PrintFormat("⛔ جلوگیری از ثبت سفارش معلق '%s' - خیلی نزدیک به سفارش/پوزیشن موجود (entry=%.5f)", comment, entry);
+      return false;
+     }
+   
+   // بررسی بازه سطوح کاماریلا برای سفارش معلق
+   if(!IsPriceWithinCamarillaRange(entry))
+     {
+      PrintFormat("⛔ سفارش معلق '%s' ایجاد نشد - قیمت خارج از بازه: %.5f", comment, entry);
       return false;
      }
 
@@ -1265,30 +1474,137 @@ void CheckTotalProfitLoss()
       SaveState();
       PrintFormat("شبکه با Magic=%d بسته شد. Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
      }
+
+     ResetTrailingState();
   }
 
+
+  void CheckBasketTrailingStop()
+  {
+   if(!UseBasketTrailing) return;
+   if(!isTradingActive || tradingDone) return;
+
+   double profit = CalculateTotalProfit();
+
+   // اگر تریلینگ هنوز فعال نشده و سود به آستانه رسید
+   if(!g_TrailingActivated)
+     {
+      if(profit >= g_TrailingActivation)
+        {
+         g_TrailingActivated = true;
+         g_PeakProfit = profit;
+         g_TrailingStopLevel = g_PeakProfit - TrailingStep;
+         PrintFormat("🟢 تریلینگ سبد فعال شد | سود فعلی: %.2f | سطح توقف اولیه: %.2f",
+                     profit, g_TrailingStopLevel);
+        }
+      return;
+     }
+
+   // به‌روزرسانی اوج سود
+   if(profit > g_PeakProfit)
+     {
+      g_PeakProfit = profit;
+      double newStop = g_PeakProfit - TrailingStep;
+      if(newStop > g_TrailingStopLevel)
+        {
+         g_TrailingStopLevel = newStop;
+         PrintFormat("📈 تریلینگ به‌روز شد | اوج سود: %.2f | سطح توقف جدید: %.2f",
+                     g_PeakProfit, g_TrailingStopLevel);
+        }
+     }
+
+   // بررسی برخورد سود به سطح توقف
+   if(profit <= g_TrailingStopLevel)
+     {
+      PrintFormat("🛑 تریلینگ فعال شد! سود شناور %.2f به سطح توقف %.2f رسید. بستن همه...",
+                  profit, g_TrailingStopLevel);
+      CloseAll();
+      // ریست شبکه (مانند وقتی TP/SL اصلی زده می‌شود)
+      int oldMagic = g_ActiveMagic;
+      g_GridInstance++;
+      g_ActiveMagic = MagicNumber + g_GridInstance;
+      buyExpansionCount  = 0;
+      sellExpansionCount = 0;
+      lastBuyPosCount    = 0;
+      lastSellPosCount   = 0;
+      g_OrderCommentSeq  = 0;
+      g_GridID           = "";
+      tradingDone = true;
+      isTradingActive = false;
+      ResetTrailingState();
+      ClearState();
+      SaveState();
+      PrintFormat("شبکه با Magic=%d بسته شد (تریلینگ). Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
+     }
+  }
 //+------------------------------------------------------------------+
 //| بستن همه                                                        |
 //+------------------------------------------------------------------+
 void CloseAll()
   {
-   for(int i = PositionsTotal()-1; i >= 0; i--)
+   int maxAttempts = 10;
+   int attempt = 0;
+
+   while(attempt < maxAttempts)
      {
-      ulong t = PositionGetTicket(i);
-      if(PositionSelectByTicket(t) &&
-         PositionGetInteger(POSITION_MAGIC) == g_ActiveMagic &&
-         PositionGetString(POSITION_SYMBOL) == _Symbol)
-         GridTrade.PositionClose(t);
+      bool anyClosed = false;
+
+      // بستن پوزیشن‌ها
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         ulong t = PositionGetTicket(i);
+         if(PositionSelectByTicket(t) &&
+            PositionGetInteger(POSITION_MAGIC) == g_ActiveMagic &&
+            PositionGetString(POSITION_SYMBOL) == _Symbol)
+           {
+            if(GridTrade.PositionClose(t))
+              {
+               PrintFormat("✅ پوزیشن %I64u بسته شد.", t);
+               anyClosed = true;
+              }
+            else
+              {
+               PrintFormat("❌ بستن پوزیشن %I64u ناموفق. کد خطا: %d", t, GridTrade.ResultRetcode());
+              }
+           }
+        }
+
+      // حذف سفارشات معلق
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
+        {
+         ulong t = OrderGetTicket(i);
+         if(OrderSelect(t) &&
+            OrderGetInteger(ORDER_MAGIC) == g_ActiveMagic &&
+            OrderGetString(ORDER_SYMBOL) == _Symbol)
+           {
+            if(GridTrade.OrderDelete(t))
+              {
+               PrintFormat("✅ سفارش %I64u حذف شد.", t);
+               anyClosed = true;
+              }
+            else
+              {
+               PrintFormat("❌ حذف سفارش %I64u ناموفق. کد خطا: %d", t, GridTrade.ResultRetcode());
+              }
+           }
+        }
+
+      // اگر دیگر هیچ پوزیشن/سفارشی باقی نمانده، کار تمام است
+      if(!AnyGridExists())
+         break;
+
+      if(!anyClosed)
+        {
+         Print("⚠️ تلاش مجدد برای بستن...");
+         Sleep(100);
+        }
+      attempt++;
      }
-   for(int i = OrdersTotal()-1; i >= 0; i--)
-     {
-      ulong t = OrderGetTicket(i);
-      if(OrderSelect(t) &&
-         OrderGetInteger(ORDER_MAGIC) == g_ActiveMagic &&
-         OrderGetString(ORDER_SYMBOL) == _Symbol)
-         GridTrade.OrderDelete(t);
-     }
-   Print("تمامی پوزیشن‌ها و سفارشات بسته شدند.");
+
+   if(AnyGridExists())
+      Print("🚨 بعد از چندین تلاش هنوز پوزیشن/سفارشی با این magic باقی مانده!");
+   else
+      Print("تمامی پوزیشن‌ها و سفارشات با موفقیت بسته شدند.");
   }
 
 //+------------------------------------------------------------------+
@@ -1325,6 +1641,7 @@ void CloseAllGrid()
    tradingDone     = true;
    ClearState();
    SaveState();
+   ResetTrailingState();
    SendLogToServer("INFO", "Closed all grid positions");
    UpdateParamOnServer("GridActive", 0.0);
    PrintFormat("شبکه با Magic=%d بسته شد. Magic جدید=%d آماده‌ی شروع.", oldMagic, g_ActiveMagic);
@@ -1354,6 +1671,7 @@ void FinalizeGrid()
    tradingDone        = true;
    ClearState();
    SaveState();
+   ResetTrailingState();
 
    Comment("");
    SendLogToServer("INFO", StringFormat("Grid finalized manually | oldMagic=%d newMagic=%d", oldMagic, g_ActiveMagic));
@@ -1500,8 +1818,11 @@ void UpdateChartComment()
         }
      }
 
+   string strengthStr = (g_TrendStrength >= 70) ? "💪 قوی" :
+                        (g_TrendStrength >= 40) ? "⚖️ متوسط" : "🪫 ضعیف";
    string directionStr = (g_GridDirection == ORDER_TYPE_BUY)  ? "▲ خرید" :
                          (g_GridDirection == ORDER_TYPE_SELL) ? "▼ فروش" : "～ نامشخص";
+   directionStr += " | " + strengthStr + " (" + IntegerToString(g_TrendStrength) + "%)";
 
    string commentText = "";
    commentText += "═══════ GridHedge Ultimate ═══════\n";
@@ -1536,6 +1857,20 @@ void UpdateCamarillaLabel()
   {
    ObjectSetString(0, "ValCamarilla", OBJPROP_TEXT,
                    g_EnableCamarillaCheck ? "true" : "false");
+   
+   string rangeText = "";
+   if(g_CamarillaRange == MODE_H1_L1)
+      rangeText = "H1-L1";
+   else if(g_CamarillaRange == MODE_H2_L2)
+      rangeText = "H2-L2";
+   else if(g_CamarillaRange == MODE_H3_L3)
+      rangeText = "H3-L3";
+   else if(g_CamarillaRange == MODE_CUSTOM)
+      rangeText = StringFormat("C(%d-%d)", CamarillaCustomUpper, CamarillaCustomLower);
+   
+   ObjectSetString(0, "ValCamarillaRange", OBJPROP_TEXT, rangeText);
+   ObjectSetString(0, "ValRangeEnabled", OBJPROP_TEXT, g_EnableCamarillaRangeCheck ? "ON" : "OFF");
+   ObjectSetInteger(0, "ValRangeEnabled", OBJPROP_COLOR, g_EnableCamarillaRangeCheck ? clrLime : clrRed);
   }
 
   //+------------------------------------------------------------------+
@@ -1714,6 +2049,60 @@ void CreateLotButtons()
    ObjectSetString (0, "ValCamarilla", OBJPROP_TEXT,      g_EnableCamarillaCheck ? "true" : "false");
    ObjectSetInteger(0, "ValCamarilla", OBJPROP_COLOR,     clrYellow);
    ObjectSetInteger(0, "ValCamarilla", OBJPROP_FONTSIZE,  8);
+
+   // دکمه‌های محدودیت بازه - فقط اگر EnableCamarillaCheck == false
+   if(!EnableCamarillaCheck)
+     {
+      // دکمه تغییر وضعیت محدودیت بازه کاماریلا
+      CreateButton("BtnToggleCamarillaRange", "حالت بازه", 126, 175, 120, 20, clrWhite, clrMediumPurple, 8);
+
+      ObjectCreate(0, "ValCamarillaRange", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ValCamarillaRange", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, "ValCamarillaRange", OBJPROP_XDISTANCE, 178);
+      ObjectSetInteger(0, "ValCamarillaRange", OBJPROP_YDISTANCE, 175);
+      ObjectSetString (0, "ValCamarillaRange", OBJPROP_TEXT,      "H2-L2");
+      ObjectSetInteger(0, "ValCamarillaRange", OBJPROP_COLOR,     clrYellow);
+      ObjectSetInteger(0, "ValCamarillaRange", OBJPROP_FONTSIZE,  8);
+      
+      // دکمه فعال/غیرفعال کردن ویژگی Range Check
+      CreateButton("BtnEnableCamarillaRange", "✓ Range", 126, 199, 120, 20, clrWhite, clrDarkGreen, 8);
+      
+      ObjectCreate(0, "ValRangeEnabled", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ValRangeEnabled", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, "ValRangeEnabled", OBJPROP_XDISTANCE, 178);
+      ObjectSetInteger(0, "ValRangeEnabled", OBJPROP_YDISTANCE, 199);
+      ObjectSetString (0, "ValRangeEnabled", OBJPROP_TEXT,      g_EnableCamarillaRangeCheck ? "ON" : "OFF");
+      ObjectSetInteger(0, "ValRangeEnabled", OBJPROP_COLOR,     g_EnableCamarillaRangeCheck ? clrLime : clrRed);
+      ObjectSetInteger(0, "ValRangeEnabled", OBJPROP_FONTSIZE,  8);
+     }
+
+   // دکمه‌های TrailingActivation - فقط اگر UseBasketTrailing == true
+   if(UseBasketTrailing)
+     {
+      // دکمه کاهش TrailingActivation
+      CreateButton("BtnTrailingActivationMinus", "-", 218, 223, 20, 20, clrBlack, clrDarkOrange, 8);
+
+      // مقدار فعلی TrailingActivation
+      ObjectCreate(0, "ValTrailingActivation", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ValTrailingActivation", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, "ValTrailingActivation", OBJPROP_XDISTANCE, 190);
+      ObjectSetInteger(0, "ValTrailingActivation", OBJPROP_YDISTANCE, 223);
+      ObjectSetString (0, "ValTrailingActivation", OBJPROP_TEXT,      DoubleToString(g_TrailingActivation, 2));
+      ObjectSetInteger(0, "ValTrailingActivation", OBJPROP_COLOR,     clrDarkOrange);
+      ObjectSetInteger(0, "ValTrailingActivation", OBJPROP_FONTSIZE,  8);
+
+      // دکمه افزایش TrailingActivation
+      CreateButton("BtnTrailingActivationPlus",  "+", 126, 223, 20, 20, clrBlueViolet, clrDarkOrange, 8);
+      
+      // برچسب TrailingActivation
+      ObjectCreate(0, "LblTrailingActivation", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_XDISTANCE, 258);
+      ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_YDISTANCE, 223);
+      ObjectSetString (0, "LblTrailingActivation", OBJPROP_TEXT,      "Trailing:");
+      ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_COLOR,     clrDarkOrange);
+      ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_FONTSIZE,  8);
+     }
   }
 //+------------------------------------------------------------------+
 void CreateButton(string name, string text, int x, int y,
@@ -1789,6 +2178,95 @@ CamarillaLevels GetTodayCamarilla()
      }
    return CalculateCamarilla(prevDay[0]);
   }
+
+//+------------------------------------------------------------------+
+//| گرفتن مقدار سطح کاماریلا بر اساس شماره                           |
+//+------------------------------------------------------------------+
+double GetCamarillaLevelByNumber(const CamarillaLevels& levels, int levelNumber, bool isUpper)
+  {
+   // levelNumber: 1=H5/L5, 2=H4/L4, 3=H3/L3, 4=H2/L2, 5=H1/L1
+   if(isUpper)
+     {
+      if(levelNumber == 1) return levels.H5;
+      if(levelNumber == 2) return levels.H4;
+      if(levelNumber == 3) return levels.H3;
+      if(levelNumber == 4) return levels.H2;
+      if(levelNumber == 5) return levels.H1;
+     }
+   else
+     {
+      if(levelNumber == 1) return levels.L5;
+      if(levelNumber == 2) return levels.L4;
+      if(levelNumber == 3) return levels.L3;
+      if(levelNumber == 4) return levels.L2;
+      if(levelNumber == 5) return levels.L1;
+     }
+   return 0;
+  }
+
+//+------------------------------------------------------------------+
+//| دریافت سطوح بازه براساس حالت انتخاب‌شده                         |
+//+------------------------------------------------------------------+
+bool GetCamarillaRangeLevels(double& upperLevel, double& lowerLevel)
+  {
+   CamarillaLevels levels = GetTodayCamarilla();
+   if(!levels.valid) return false;
+   
+   if(g_CamarillaRange == MODE_H1_L1)
+     {
+      upperLevel = levels.H1;
+      lowerLevel = levels.L1;
+     }
+   else if(g_CamarillaRange == MODE_H2_L2)
+     {
+      upperLevel = levels.H2;
+      lowerLevel = levels.L2;
+     }
+   else if(g_CamarillaRange == MODE_H3_L3)
+     {
+      upperLevel = levels.H3;
+      lowerLevel = levels.L3;
+     }
+   else if(g_CamarillaRange == MODE_CUSTOM)
+     {
+      upperLevel = GetCamarillaLevelByNumber(levels, CamarillaCustomUpper, true);
+      lowerLevel = GetCamarillaLevelByNumber(levels, CamarillaCustomLower, false);
+     }
+   
+   return (upperLevel > 0 && lowerLevel > 0);
+  }
+
+//+------------------------------------------------------------------+
+//| بررسی اینکه قیمت درون بازه سطوح کاماریلا است یا نه                 |
+//+------------------------------------------------------------------+
+bool IsPriceWithinCamarillaRange(double price)
+  {
+   if(!g_EnableCamarillaRangeCheck) return true;
+
+   static datetime lastDay = 0;
+   static double cachedUpper = 0, cachedLower = 0;
+   datetime todayStart = iTime(_Symbol, PERIOD_D1, 0);
+   
+   // بازخوانی سطوح هر روز
+   if(todayStart != lastDay)
+     {
+      if(!GetCamarillaRangeLevels(cachedUpper, cachedLower))
+         return true; // اگر نتوانستیم سطوح را بگیریم، سفارش را بپذیر
+      lastDay = todayStart;
+     }
+   
+   // بررسی اینکه قیمت بین دو سطح است
+   if(price >= cachedLower && price <= cachedUpper)
+     {
+      PrintFormat("✅ قیمت %.5f درون بازه [%.5f - %.5f]", price, cachedLower, cachedUpper);
+      return true;
+     }
+   
+   PrintFormat("⛔ قیمت %.5f خارج از بازه [%.5f - %.5f]. سفارش ایجاد نشود.",
+               price, cachedLower, cachedUpper);
+   return false;
+  }
+
 
 //+------------------------------------------------------------------+
 //| بررسی نزدیکی قیمت به سطوح اصلی کاماریلا                          |
