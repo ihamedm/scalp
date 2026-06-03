@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "6.5"
+#property version   "6.6"
 
 #include <Trade\Trade.mqh>
 
@@ -95,6 +95,8 @@ double g_ActualGridStep  = 0;
 int    g_ActiveMagic = 0;        // MagicNumber پویا برای شبکه‌ی جاری
 int    g_GridInstance = 0;       // شمارنده‌ی شبکه (برای تولید Magic یکتا)
 int    g_GridDirection = -1;     // جهت شبکه جاری (ORDER_TYPE_BUY / ORDER_TYPE_SELL)
+int    g_LiveTrendDirection = -1; // جهت زنده برای نمایش و تصمیم قبل از شروع شبکه
+datetime g_LastTrendRefreshTime = 0;
 int    g_OrderCommentSeq = 0;    // شماره سفارش داخل شبکه جاری
 int    g_adxHandle = INVALID_HANDLE;
 int    g_rsiHandle = INVALID_HANDLE;
@@ -559,7 +561,11 @@ void OnTick()
       else return; // همچنان منتظر
      }
 
-   if(!isTradingActive || tradingDone) return;
+   if(!isTradingActive || tradingDone)
+     {
+      UpdateChartComment();
+      return;
+     }
 
    // ارسال لاگ پوریدی وضعیت تریدینگ
    if(TimeCurrent() - g_LastLogSyncTime >= LogSyncInterval)
@@ -891,7 +897,7 @@ void ExecuteStrategy()
 //+------------------------------------------------------------------+
 //| تشخیص روند - چند کندل + شیب EMA                                |
 //+------------------------------------------------------------------+
-int DetectTrendFromEMA()
+int DetectTrendFromEMA(bool printLog = true)
   {
    g_TrendStrength = 0;
    int needed = MathMax(TrendConfirmCandles, 1) + 1;
@@ -969,11 +975,31 @@ int DetectTrendFromEMA()
    strength = MathMax(0, MathMin(100, strength));
    g_TrendStrength = strength;
 
-   PrintFormat("🧭 تشخیص روند: %s (قدرت: %d%%) | ADX=%.2f (آستانه=%.2f) | RSI=%.2f",
-               direction == ORDER_TYPE_BUY ? "خرید" : (direction == ORDER_TYPE_SELL ? "فروش" : "نامشخص"),
-               strength, adxVal, ADX_Threshold, rsiVal);
+   if(printLog)
+      PrintFormat("🧭 تشخیص روند: %s (قدرت: %d%%) | ADX=%.2f (آستانه=%.2f) | RSI=%.2f",
+                  direction == ORDER_TYPE_BUY ? "خرید" : (direction == ORDER_TYPE_SELL ? "فروش" : "نامشخص"),
+                  strength, adxVal, ADX_Threshold, rsiVal);
 
    return direction;
+  }
+
+//+------------------------------------------------------------------+
+//| به‌روزرسانی جهت زنده برای نمایش قبل از شروع شبکه                |
+//+------------------------------------------------------------------+
+int RefreshLiveTrendDirection(bool force = false)
+  {
+   datetime now = TimeCurrent();
+   if(!force && g_LiveTrendDirection != -1 && (now - g_LastTrendRefreshTime) < 10)
+      return g_LiveTrendDirection;
+
+   int direction = DetectTrendFromEMA(false);
+   if(direction == ORDER_TYPE_BUY || direction == ORDER_TYPE_SELL)
+     {
+      g_LiveTrendDirection = direction;
+      g_LastTrendRefreshTime = now;
+     }
+
+   return g_LiveTrendDirection;
   }
 
 //+------------------------------------------------------------------+
@@ -1766,18 +1792,35 @@ bool IsMarketOpen()
 //+------------------------------------------------------------------+
 void UpdateChartComment()
   {
+   string commentText = "";
+   int liveDirection = RefreshLiveTrendDirection(false);
+   int displayDirection = (isTradingActive && !tradingDone && g_GridDirection != -1)
+                          ? g_GridDirection
+                          : liveDirection;
+
+   string strengthStr = (g_TrendStrength >= 70) ? "💪 قوی" :
+                        (g_TrendStrength >= 40) ? "⚖️ متوسط" : "🪫 ضعیف";
+   string directionStr = (displayDirection == ORDER_TYPE_BUY)  ? "▲ خرید" :
+                         (displayDirection == ORDER_TYPE_SELL) ? "▼ فروش" : "～ نامشخص";
+   directionStr += " | " + strengthStr + " (" + IntegerToString(g_TrendStrength) + "%)";
+
+
    if(!isTradingActive)
      {
-      Comment("═════ GridHedge Ultimate ═════\n"
+      commentText = "═════ GridHedge Ultimate ═════\n"
               "🔴 شبکه غیرفعال است.\n"
-              "برای شروع، دکمه «شروع شبکه» را بزنید.");
+              "برای شروع، دکمه «شروع شبکه» را بزنید.\n\n";
+      commentText += "🧭 جهت     : " + directionStr + "\n";
+      Comment(commentText);
       return;
      }
    if(tradingDone)
      {
-      Comment("═════ GridHedge Ultimate ═════\n"
+      commentText = "═════ GridHedge Ultimate ═════\n"
               "✅ شبکه پایان یافته (هدف سود یا حد ضرر رسیده).\n"
-              "برای شروع مجدد، دکمه «شروع شبکه» را بزنید.");
+              "برای شروع مجدد، دکمه «شروع شبکه» را بزنید.\n\n";
+      commentText += "🧭 جهت     : " + directionStr + "\n";
+      Comment(commentText);
       return;
      }
 
@@ -1818,13 +1861,6 @@ void UpdateChartComment()
         }
      }
 
-   string strengthStr = (g_TrendStrength >= 70) ? "💪 قوی" :
-                        (g_TrendStrength >= 40) ? "⚖️ متوسط" : "🪫 ضعیف";
-   string directionStr = (g_GridDirection == ORDER_TYPE_BUY)  ? "▲ خرید" :
-                         (g_GridDirection == ORDER_TYPE_SELL) ? "▼ فروش" : "～ نامشخص";
-   directionStr += " | " + strengthStr + " (" + IntegerToString(g_TrendStrength) + "%)";
-
-   string commentText = "";
    commentText += "═══════ GridHedge Ultimate ═══════\n";
    commentText += "🔢 Magic   : " + IntegerToString(g_ActiveMagic) + "\n";
    commentText += "🏷️ شناسه   : " + g_GridID + "\n";
@@ -2097,7 +2133,7 @@ void CreateLotButtons()
       // برچسب TrailingActivation
       ObjectCreate(0, "LblTrailingActivation", OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
-      ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_XDISTANCE, 258);
+      ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_XDISTANCE, 300);
       ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_YDISTANCE, 223);
       ObjectSetString (0, "LblTrailingActivation", OBJPROP_TEXT,      "Trailing:");
       ObjectSetInteger(0, "LblTrailingActivation", OBJPROP_COLOR,     clrDarkOrange);
