@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Hamed Movasaqpoor"
 #property link      "hamed.movasaqpoor@gmail.com"
-#property version   "6.6"
+#property version   "6.7"
 
 #include <Trade\Trade.mqh>
 
@@ -36,6 +36,11 @@ input int              TrendMAPeriod       = 20;
 input int              TrendMAShift        = 0;
 input ENUM_MA_METHOD   TrendMAMethod       = MODE_EMA;
 input int              TrendConfirmCandles = 3;
+input ENUM_TIMEFRAMES  ShortTrendTF        = PERIOD_M1;   // تایم‌فریم روند کوتاه‌مدت
+input ENUM_TIMEFRAMES  MidTrendTF          = PERIOD_M15;  // تایم‌فریم روند میان‌مدت
+input bool             EnableTrendNotification = true;     // ارسال نوتیف وقتی هر دو روند قوی و هم‌جهت باشند
+input int              TrendNotifyMinStrength  = 70;       // حداقل قدرت برای ارسال نوتیف
+input int              TrendNotifyCooldownSec  = 300;      // فاصله حداقل بین نوتیف‌ها (ثانیه)
 
 
 input group "=== معاملات ==="
@@ -97,11 +102,14 @@ int    g_GridInstance = 0;       // شمارنده‌ی شبکه (برای تو�
 int    g_GridDirection = -1;     // جهت شبکه جاری (ORDER_TYPE_BUY / ORDER_TYPE_SELL)
 int    g_LiveTrendDirection = -1; // جهت زنده برای نمایش و تصمیم قبل از شروع شبکه
 datetime g_LastTrendRefreshTime = 0;
+int    g_MidTrendDirection = -1;  // جهت زنده روند میان‌مدت
+datetime g_LastMidTrendRefreshTime = 0;
+datetime g_LastTrendNotificationTime = 0;
+string g_LastTrendNotificationKey = "";
 int    g_OrderCommentSeq = 0;    // شماره سفارش داخل شبکه جاری
-int    g_adxHandle = INVALID_HANDLE;
-int    g_rsiHandle = INVALID_HANDLE;
 
 int    g_TrendStrength = 0;   // قدرت روند (0-100)
+int    g_MidTrendStrength = 0; // قدرت روند میان‌مدت (0-100)
 bool   UseADXFilter        = true;      // فعال‌سازی فیلتر ADX
 int    ADX_Period          = 14;        // دوره ADX
 double ADX_Threshold       = 22.0;      // حداقل ADX برای روند قوی
@@ -396,21 +404,6 @@ int OnInit()
       g_TrailingActivation = TrailingActivation;
     }
 
-   if(UseADXFilter)
-     {
-      g_adxHandle = iADX(_Symbol, PERIOD_CURRENT, ADX_Period);
-      if(g_adxHandle == INVALID_HANDLE)
-         Print("⚠️ خطا در ایجاد هندل ADX");
-     }
-
-   if(UseRSIFilter)
-     {
-      g_rsiHandle = iRSI(_Symbol, PERIOD_CURRENT, RSI_Period, PRICE_CLOSE);
-      if(g_rsiHandle == INVALID_HANDLE)
-         Print("⚠️ خطا در ایجاد هندل RSI");
-     }
-
-
     // ShowCamarillaLevelsOnChart();
 
     bool isTester = (bool)MQLInfoInteger(MQL_TESTER);
@@ -465,9 +458,6 @@ void OnDeinit(const int reason)
   {
    // قبل از پاک‌سازی رابط، وضعیت را ذخیره کن تا تغییر تایم‌فریم باعث ریست تنظیمات نشود
    SaveState();
-
-   if(g_adxHandle != INVALID_HANDLE) IndicatorRelease(g_adxHandle);
-   if(g_rsiHandle != INVALID_HANDLE) IndicatorRelease(g_rsiHandle);
 
    ObjectDelete(0, "BtnStartGrid");
    ObjectDelete(0, "BtnCloseProfitable");
@@ -564,6 +554,7 @@ void OnTick()
    if(!isTradingActive || tradingDone)
      {
       UpdateChartComment();
+      CheckTrendStrengthNotification();
       return;
      }
 
@@ -617,6 +608,7 @@ void OnTick()
       ProcessPriceMovementExpansion();
      }
   UpdateChartComment(); 
+  CheckTrendStrengthNotification();
 
   if(UseBasketTrailing)
     CheckBasketTrailingStop();
@@ -638,14 +630,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 
    if(sparam == "BtnBuyExpPlus")
      {
-      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 1, 1000);
+      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 1, 100000);
       UpdateExpansionLabels();
       SaveState();
       Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
      }
    else if(sparam == "BtnBuyExpPlus50")
      {
-      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 50, 1000);
+      g_MaxBuyExpansions = MathMin(g_MaxBuyExpansions + 50, 100000);
       UpdateExpansionLabels();
       SaveState();
       Print("MaxBuyExpansions → ", g_MaxBuyExpansions);
@@ -666,14 +658,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
      }
    else if(sparam == "BtnSellExpPlus")
      {
-      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 1, 1000);
+      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 1, 100000);
       UpdateExpansionLabels();
       SaveState();
       Print("MaxSellExpansions → ", g_MaxSellExpansions);
      }
    else if(sparam == "BtnSellExpPlus50")
      {
-      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 50, 1000);
+      g_MaxSellExpansions = MathMin(g_MaxSellExpansions + 50, 100000);
       UpdateExpansionLabels();
       SaveState();
       Print("MaxSellExpansions → ", g_MaxSellExpansions);
@@ -850,7 +842,7 @@ void ExecuteStrategy()
      }
    else
      {
-      direction = DetectTrendFromEMA();
+      direction = DetectTrendFromEMA(ShortTrendTF, g_TrendStrength);
       Print("جهت EMA(", TrendMAPeriod, "): ", direction == ORDER_TYPE_BUY ? "خرید ▲" : "فروش ▼");
      }
 
@@ -897,18 +889,18 @@ void ExecuteStrategy()
 //+------------------------------------------------------------------+
 //| تشخیص روند - چند کندل + شیب EMA                                |
 //+------------------------------------------------------------------+
-int DetectTrendFromEMA(bool printLog = true)
+int DetectTrendFromEMA(ENUM_TIMEFRAMES timeframe, int &strengthOut, bool printLog = true)
   {
-   g_TrendStrength = 0;
+   strengthOut = 0;
    int needed = MathMax(TrendConfirmCandles, 1) + 1;
-   int handle = iMA(_Symbol, 0, TrendMAPeriod, TrendMAShift, TrendMAMethod, PRICE_CLOSE);
+   int handle = iMA(_Symbol, timeframe, TrendMAPeriod, TrendMAShift, TrendMAMethod, PRICE_CLOSE);
    if(handle == INVALID_HANDLE) { Print("خطا در EMA handle"); return -1; }
 
    double ema[], cls[];
    ArraySetAsSeries(ema, true);
    ArraySetAsSeries(cls, true);
    if(CopyBuffer(handle, 0, 0, needed, ema) != needed ||
-      CopyClose(_Symbol, 0, 0, needed, cls)  != needed)
+      CopyClose(_Symbol, timeframe, 0, needed, cls)  != needed)
      {
       Print("خطا در کپی داده EMA");
       IndicatorRelease(handle);
@@ -938,49 +930,125 @@ int DetectTrendFromEMA(bool printLog = true)
    // ---- ADX Filter ----
    double adxVal = 0;
    bool adxOk = true;
-   if(UseADXFilter && g_adxHandle != INVALID_HANDLE)
+   if(UseADXFilter)
      {
-      double adx[];
-      ArraySetAsSeries(adx, true);
-      if(CopyBuffer(g_adxHandle, 0, 0, 1, adx) == 1)
+      int adxHandle = iADX(_Symbol, timeframe, ADX_Period);
+      if(adxHandle == INVALID_HANDLE)
         {
-         adxVal = adx[0];
-         if(adxVal < ADX_Threshold)
+         adxOk = false;
+         if(printLog) Print("⚠️ خطا در ایجاد هندل ADX");
+        }
+      else
+        {
+         double adx[];
+         ArraySetAsSeries(adx, true);
+         if(CopyBuffer(adxHandle, 0, 0, 1, adx) == 1)
+           {
+            adxVal = adx[0];
+            if(adxVal < ADX_Threshold)
+               adxOk = false;
+           }
+         else
             adxOk = false;
+         IndicatorRelease(adxHandle);
         }
      }
 
    // ---- RSI Filter ----
    double rsiVal = 50.0;
    bool rsiOk = true;
-   if(UseRSIFilter && g_rsiHandle != INVALID_HANDLE)
+   if(UseRSIFilter)
      {
-      double rsi[];
-      ArraySetAsSeries(rsi, true);
-      if(CopyBuffer(g_rsiHandle, 0, 0, 1, rsi) == 1)
+      int rsiHandle = iRSI(_Symbol, timeframe, RSI_Period, PRICE_CLOSE);
+      if(rsiHandle == INVALID_HANDLE)
         {
-         rsiVal = rsi[0];
-         if(direction == ORDER_TYPE_BUY && rsiVal > RSI_BuyMax)
+         rsiOk = false;
+         if(printLog) Print("⚠️ خطا در ایجاد هندل RSI");
+        }
+      else
+        {
+         double rsi[];
+         ArraySetAsSeries(rsi, true);
+         if(CopyBuffer(rsiHandle, 0, 0, 1, rsi) == 1)
+           {
+            rsiVal = rsi[0];
+            if(direction == ORDER_TYPE_BUY && rsiVal > RSI_BuyMax)
+               rsiOk = false;
+            else if(direction == ORDER_TYPE_SELL && rsiVal < RSI_SellMin)
+               rsiOk = false;
+           }
+         else
             rsiOk = false;
-         else if(direction == ORDER_TYPE_SELL && rsiVal < RSI_SellMin)
-            rsiOk = false;
+         IndicatorRelease(rsiHandle);
         }
      }
 
    // محاسبه قدرت کلی (0-100)
    int strength = 50; // پایه
-   if(bullish && slopeUp) strength += 20; else if(!bullish || !slopeUp) strength -= 10;
+   bool emaAligned = (direction == ORDER_TYPE_BUY && bullish && slopeUp) ||
+                     (direction == ORDER_TYPE_SELL && bearish && slopeDown);
+   if(emaAligned) strength += 20; else strength -= 10;
    if(adxOk) strength += 20; else strength -= 20;
    if(rsiOk) strength += 10; else strength -= 10;
    strength = MathMax(0, MathMin(100, strength));
-   g_TrendStrength = strength;
+   strengthOut = strength;
 
    if(printLog)
-      PrintFormat("🧭 تشخیص روند: %s (قدرت: %d%%) | ADX=%.2f (آستانه=%.2f) | RSI=%.2f",
+      PrintFormat("🧭 تشخیص روند %s: %s (قدرت: %d%%) | ADX=%.2f (آستانه=%.2f) | RSI=%.2f",
+                  TrendTimeframeText(timeframe),
                   direction == ORDER_TYPE_BUY ? "خرید" : (direction == ORDER_TYPE_SELL ? "فروش" : "نامشخص"),
                   strength, adxVal, ADX_Threshold, rsiVal);
 
    return direction;
+  }
+
+string TrendTimeframeText(ENUM_TIMEFRAMES timeframe)
+  {
+   string value = EnumToString(timeframe);
+   StringReplace(value, "PERIOD_", "");
+   return value;
+  }
+
+string TrendStrengthText(int strength)
+  {
+   if(strength >= 70) return "💪 قوی";
+   if(strength >= 40) return "⚖️ متوسط";
+   return "🪫 ضعیف";
+  }
+
+string TrendDirectionText(int direction)
+  {
+   if(direction == ORDER_TYPE_BUY)  return "▲ خرید";
+   if(direction == ORDER_TYPE_SELL) return "▼ فروش";
+   return "～ نامشخص";
+  }
+
+string FormatTrendStatus(int direction, int strength)
+  {
+   return TrendDirectionText(direction) + " | " + TrendStrengthText(strength) +
+          " (" + IntegerToString(strength) + "%)";
+  }
+
+int RefreshTrendDirection(ENUM_TIMEFRAMES timeframe,
+                          int &cachedDirection,
+                          int &cachedStrength,
+                          datetime &lastRefreshTime,
+                          bool force = false)
+  {
+   datetime now = TimeCurrent();
+   if(!force && cachedDirection != -1 && (now - lastRefreshTime) < 10)
+      return cachedDirection;
+
+   int strength = 0;
+   int direction = DetectTrendFromEMA(timeframe, strength, false);
+   if(direction == ORDER_TYPE_BUY || direction == ORDER_TYPE_SELL)
+     {
+      cachedDirection = direction;
+      cachedStrength = strength;
+      lastRefreshTime = now;
+     }
+
+   return cachedDirection;
   }
 
 //+------------------------------------------------------------------+
@@ -988,18 +1056,62 @@ int DetectTrendFromEMA(bool printLog = true)
 //+------------------------------------------------------------------+
 int RefreshLiveTrendDirection(bool force = false)
   {
+   return RefreshTrendDirection(ShortTrendTF, g_LiveTrendDirection, g_TrendStrength,
+                                g_LastTrendRefreshTime, force);
+  }
+
+int RefreshMidTrendDirection(bool force = false)
+  {
+   return RefreshTrendDirection(MidTrendTF, g_MidTrendDirection, g_MidTrendStrength,
+                                g_LastMidTrendRefreshTime, force);
+  }
+
+void CheckTrendStrengthNotification()
+  {
+   if(!EnableTrendNotification) return;
+   if((bool)MQLInfoInteger(MQL_TESTER)) return;
+
+   int shortDirection = RefreshLiveTrendDirection(false);
+   int midDirection = RefreshMidTrendDirection(false);
+   if(shortDirection != ORDER_TYPE_BUY && shortDirection != ORDER_TYPE_SELL) return;
+   if(midDirection != ORDER_TYPE_BUY && midDirection != ORDER_TYPE_SELL) return;
+
+   bool bothStrong = (g_TrendStrength >= TrendNotifyMinStrength &&
+                      g_MidTrendStrength >= TrendNotifyMinStrength);
+   bool sameDirection = (shortDirection == midDirection);
+   if(!bothStrong || !sameDirection)
+      return;
+
    datetime now = TimeCurrent();
-   if(!force && g_LiveTrendDirection != -1 && (now - g_LastTrendRefreshTime) < 10)
-      return g_LiveTrendDirection;
+   string notifyKey = IntegerToString(shortDirection) + "|" +
+                      IntegerToString(g_TrendStrength) + "|" +
+                      IntegerToString(g_MidTrendStrength);
 
-   int direction = DetectTrendFromEMA(false);
-   if(direction == ORDER_TYPE_BUY || direction == ORDER_TYPE_SELL)
+   if((now - g_LastTrendNotificationTime) < TrendNotifyCooldownSec)
+      return;
+
+   if(g_LastTrendNotificationKey == notifyKey)
+      return;
+
+   string message = StringFormat("%s: روند کوتاه %s و میانی %s هر دو قوی و هم‌جهت هستند | %s | کوتاه %d%% | میانی %d%%",
+                                 _Symbol,
+                                 TrendTimeframeText(ShortTrendTF),
+                                 TrendTimeframeText(MidTrendTF),
+                                 TrendDirectionText(shortDirection),
+                                 g_TrendStrength,
+                                 g_MidTrendStrength);
+
+   ResetLastError();
+   if(SendNotification(message))
      {
-      g_LiveTrendDirection = direction;
-      g_LastTrendRefreshTime = now;
+      g_LastTrendNotificationKey = notifyKey;
+      g_LastTrendNotificationTime = now;
+      Print("📲 نوتیف روند ارسال شد: ", message);
      }
-
-   return g_LiveTrendDirection;
+   else
+     {
+      PrintFormat("❌ ارسال نوتیف روند ناموفق بود. Error=%d", GetLastError());
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -1794,15 +1906,14 @@ void UpdateChartComment()
   {
    string commentText = "";
    int liveDirection = RefreshLiveTrendDirection(false);
+   int midDirection = RefreshMidTrendDirection(false);
    int displayDirection = (isTradingActive && !tradingDone && g_GridDirection != -1)
                           ? g_GridDirection
                           : liveDirection;
 
-   string strengthStr = (g_TrendStrength >= 70) ? "💪 قوی" :
-                        (g_TrendStrength >= 40) ? "⚖️ متوسط" : "🪫 ضعیف";
-   string directionStr = (displayDirection == ORDER_TYPE_BUY)  ? "▲ خرید" :
-                         (displayDirection == ORDER_TYPE_SELL) ? "▼ فروش" : "～ نامشخص";
-   directionStr += " | " + strengthStr + " (" + IntegerToString(g_TrendStrength) + "%)";
+   string directionStr = TrendDirectionText(displayDirection);
+   string shortTrendStr = FormatTrendStatus(liveDirection, g_TrendStrength);
+   string midTrendStr = FormatTrendStatus(midDirection, g_MidTrendStrength);
 
 
    if(!isTradingActive)
@@ -1810,7 +1921,8 @@ void UpdateChartComment()
       commentText = "═════ GridHedge Ultimate ═════\n"
               "🔴 شبکه غیرفعال است.\n"
               "برای شروع، دکمه «شروع شبکه» را بزنید.\n\n";
-      commentText += "🧭 جهت     : " + directionStr + "\n";
+      commentText += "🧭 روند کوتاه " + TrendTimeframeText(ShortTrendTF) + " : " + shortTrendStr + "\n";
+      commentText += "🧭 روند میانی " + TrendTimeframeText(MidTrendTF) + " : " + midTrendStr + "\n";
       Comment(commentText);
       return;
      }
@@ -1819,7 +1931,8 @@ void UpdateChartComment()
       commentText = "═════ GridHedge Ultimate ═════\n"
               "✅ شبکه پایان یافته (هدف سود یا حد ضرر رسیده).\n"
               "برای شروع مجدد، دکمه «شروع شبکه» را بزنید.\n\n";
-      commentText += "🧭 جهت     : " + directionStr + "\n";
+      commentText += "🧭 روند کوتاه " + TrendTimeframeText(ShortTrendTF) + " : " + shortTrendStr + "\n";
+      commentText += "🧭 روند میانی " + TrendTimeframeText(MidTrendTF) + " : " + midTrendStr + "\n";
       Comment(commentText);
       return;
      }
@@ -1864,7 +1977,9 @@ void UpdateChartComment()
    commentText += "═══════ GridHedge Ultimate ═══════\n";
    commentText += "🔢 Magic   : " + IntegerToString(g_ActiveMagic) + "\n";
    commentText += "🏷️ شناسه   : " + g_GridID + "\n";
-   commentText += "🧭 جهت     : " + directionStr + "\n";
+   commentText += "🧭 جهت شبکه: " + directionStr + "\n";
+   commentText += "🧭 روند کوتاه " + TrendTimeframeText(ShortTrendTF) + " : " + shortTrendStr + "\n";
+   commentText += "🧭 روند میانی " + TrendTimeframeText(MidTrendTF) + " : " + midTrendStr + "\n";
    commentText += "📦 حجم لات : " + DoubleToString(g_CurrentLot, 3) + "\n";
    commentText += "📊 پوزیشن‌ها: " + IntegerToString(totalPos) + "  ( خرید:" + IntegerToString(buyPos) + " | فروش:" + IntegerToString(sellPos) + " )\n";
    commentText += "⏳ سفارشات : Buy Stop:" + IntegerToString(buyOrders) + " | Sell Stop:" + IntegerToString(sellOrders) + "\n";
